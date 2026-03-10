@@ -1,0 +1,31 @@
+# GitHub License Activity Collector — Configuration
+# Copy this file to config.yaml and fill in your credentials.
+
+# GitHub Personal Access Token
+# Classic PAT with admin:enterprise + read:org covers all required scopes.
+# Fine-grained PATs work but scope validation is skipped.
+github_token: ""
+
+# Organization slug (required)
+# This is the org whose Copilot seats and members will be scanned.
+org: "your-org-slug"
+
+# Enterprise slug (optional)
+# If set, the collector will also pull enterprise member list and audit log.
+# Leave empty if your org is on Team plan (not Enterprise).
+enterprise: ""
+
+# Inactivity threshold in days (default: 60)
+# Users with no activity across all signals for this many days
+# are flagged as recapture candidates.
+threshold_days: 60
+
+# Service account patterns (optional override)
+# Logins matching any of these substrings are flagged as
+# "enterprise_review" instead of auto-recapture.
+# Default: ["bot-", "svc-", "ci-", "-deploy"]
+# service_account_patterns:
+#   - "bot-"
+#   - "svc-"
+#   - "ci-"
+#   - "-deploy"
