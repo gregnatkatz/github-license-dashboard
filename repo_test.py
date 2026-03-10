@@ -18,7 +18,8 @@ import requests
 from token_inspector import inspect_token, print_report
 
 GITHUB_API = "https://api.github.com"
-INACTIVE_THRESHOLD_DAYS = 60
+DEFAULT_THRESHOLD_DAYS = 60
+INACTIVE_THRESHOLD_DAYS = DEFAULT_THRESHOLD_DAYS
 
 
 def _headers(token: str) -> dict:
@@ -160,6 +161,11 @@ def print_blocked_signals() -> None:
     print("-" * 60 + "\n")
 
 
+def _update_threshold(days: int) -> None:
+    global INACTIVE_THRESHOLD_DAYS
+    INACTIVE_THRESHOLD_DAYS = days
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Smoke test — validate token and pull repo contributor activity"
@@ -182,8 +188,8 @@ def main():
     )
     args = parser.parse_args()
 
-    global INACTIVE_THRESHOLD_DAYS
-    INACTIVE_THRESHOLD_DAYS = args.threshold
+    # Update module-level threshold
+    _update_threshold(args.threshold)
 
     if not args.token:
         print("Error: provide --token or set GITHUB_TOKEN env var.")
