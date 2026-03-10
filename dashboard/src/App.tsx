@@ -129,6 +129,25 @@ interface TokenEntry {
   label: string; // display label
 }
 
+interface UserLicenseStatus {
+  username: string;
+  avatarUrl: string;
+  totalRepos: number;
+  activeRepos: number;
+  monitorRepos: number;
+  revokeRepos: number;
+  lastPush: string | null;
+  lastPushRepo: string | null;
+  lastPR: string | null;
+  lastPRRepo: string | null;
+  lastActivity: string | null;
+  lastActivityType: string | null;
+  lastActivityRepo: string | null;
+  daysSinceLastActivity: number;
+  daysUntilRevoke: number; // 60 - daysSinceLastActivity (clamped to 0)
+  recommendation: "Active" | "Monitor" | "Revoke License";
+}
+
 /* ─── Palette ────────────────────────────────────────────────────────── */
 
 const COLORS = {
@@ -984,6 +1003,43 @@ async function fetchAllUserRepos(token: string): Promise<UserRepo[]> {
   return allRepos;
 }
 
+async function fetchUserPRActivity(token: string, username: string): Promise<{ lastPR: string | null; lastPRRepo: string | null; lastActivity: string | null; lastActivityType: string | null; lastActivityRepo: string | null; avatarUrl: string }> {
+  let lastPR: string | null = null;
+  let lastPRRepo: string | null = null;
+  let lastActivity: string | null = null;
+  let lastActivityType: string | null = null;
+  let lastActivityRepo: string | null = null;
+  let avatarUrl = `https://github.com/${username}.png`;
+
+  for (let page = 1; page <= 3; page++) {
+    const resp = await fetch(
+      `${API}/users/${username}/events?per_page=100&page=${page}`,
+      { headers: hdrs(token) }
+    );
+    if (!resp.ok) break;
+    const events = await resp.json();
+    if (!events.length) break;
+    for (const evt of events) {
+      const date = evt.created_at;
+      const repoName = evt.repo?.name || "";
+      if (evt.actor?.avatar_url) avatarUrl = evt.actor.avatar_url;
+      // Track overall last activity
+      if (!lastActivity || new Date(date) > new Date(lastActivity)) {
+        lastActivity = date;
+        lastActivityType = EVENT_LABELS[evt.type] || evt.type?.replace("Event", "") || "Unknown";
+        lastActivityRepo = repoName;
+      }
+      // Track last PR specifically
+      if (evt.type === "PullRequestEvent" && (!lastPR || new Date(date) > new Date(lastPR))) {
+        lastPR = date;
+        lastPRRepo = repoName;
+      }
+    }
+    if (events.length < 100) break;
+  }
+  return { lastPR, lastPRRepo, lastActivity, lastActivityType, lastActivityRepo, avatarUrl };
+}
+
 async function fetchUserEvents(token: string, username: string): Promise<Map<string, { date: string; type: string; repo: string }>> {
   const activityMap = new Map<string, { date: string; type: string; repo: string }>();
   for (let page = 1; page <= 3; page++) {
@@ -1032,6 +1088,7 @@ function App() {
   const [openPRs, setOpenPRs] = useState<PullRequest[]>([]);
   const [allRepos, setAllRepos] = useState<UserRepo[]>([]);
   const [userEventsMap, setUserEventsMap] = useState<Map<string, { date: string; type: string; repo: string }>>(new Map());
+  const [userLicenseStatuses, setUserLicenseStatuses] = useState<UserLicenseStatus[]>([]);
 
   // Helper: get the token for a given repo owner
   const getTokenForOwner = useCallback((owner: string): string => {
@@ -1110,9 +1167,66 @@ function App() {
       // Sort by pushed_at descending
       mergedRepos.sort((a, b) => new Date(b.pushed_at).getTime() - new Date(a.pushed_at).getTime());
 
+      // Build per-user license status
+      const nowMs = Date.now();
+      const userStatuses: UserLicenseStatus[] = await Promise.all(
+        validPairs.map(async (p) => {
+          const username = p.info.user || "unknown";
+          const userRepos = mergedRepos.filter((r) => r._owner === username);
+          const prActivity = await fetchUserPRActivity(p.token, username);
+
+          // Find latest push across all user's repos
+          let latestPush: string | null = null;
+          let latestPushRepo: string | null = null;
+          for (const r of userRepos) {
+            if (!latestPush || new Date(r.pushed_at) > new Date(latestPush)) {
+              latestPush = r.pushed_at;
+              latestPushRepo = r.full_name;
+            }
+          }
+
+          // Determine most recent activity (push vs event activity)
+          const pushDate = latestPush ? new Date(latestPush).getTime() : 0;
+          const actDate = prActivity.lastActivity ? new Date(prActivity.lastActivity).getTime() : 0;
+          const mostRecentMs = Math.max(pushDate, actDate);
+          const daysSince = mostRecentMs > 0 ? Math.floor((nowMs - mostRecentMs) / 86400000) : 999;
+          const daysUntil = Math.max(0, 60 - daysSince);
+
+          const activeCount = userRepos.filter((r) => Math.floor((nowMs - new Date(r.pushed_at).getTime()) / 86400000) < 30).length;
+          const monitorCount = userRepos.filter((r) => {
+            const d = Math.floor((nowMs - new Date(r.pushed_at).getTime()) / 86400000);
+            return d >= 30 && d < 60;
+          }).length;
+          const revokeCount = userRepos.filter((r) => Math.floor((nowMs - new Date(r.pushed_at).getTime()) / 86400000) >= 60).length;
+
+          const recommendation: "Active" | "Monitor" | "Revoke License" =
+            daysSince < 30 ? "Active" : daysSince < 60 ? "Monitor" : "Revoke License";
+
+          return {
+            username,
+            avatarUrl: prActivity.avatarUrl,
+            totalRepos: userRepos.length,
+            activeRepos: activeCount,
+            monitorRepos: monitorCount,
+            revokeRepos: revokeCount,
+            lastPush: latestPush,
+            lastPushRepo: latestPushRepo,
+            lastPR: prActivity.lastPR,
+            lastPRRepo: prActivity.lastPRRepo,
+            lastActivity: prActivity.lastActivity || latestPush,
+            lastActivityType: prActivity.lastActivityType || (latestPush ? "Push" : null),
+            lastActivityRepo: prActivity.lastActivityRepo || latestPushRepo,
+            daysSinceLastActivity: daysSince,
+            daysUntilRevoke: daysUntil,
+            recommendation,
+          };
+        })
+      );
+
       setOwnerTokenMap(newOwnerTokenMap);
       setAllRepos(mergedRepos);
       setUserEventsMap(mergedEvents);
+      setUserLicenseStatuses(userStatuses);
       setLastRefresh(new Date());
       setSettingsOpen(false);
       setViewMode("overview");
@@ -1508,6 +1622,121 @@ function App() {
               </GlassCard>
             );
           })()}
+
+          {/* User License Status Panel */}
+          {userLicenseStatuses.length > 0 && (
+            <>
+              <div style={{ height: 16 }} />
+              <GlassCard delay={75}>
+                <SectionHeader icon={<Users size={18} />} title="User License Status" />
+                <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(userLicenseStatuses.length, 3)}, 1fr)`, gap: 16, marginTop: 12 }}>
+                  {userLicenseStatuses.map((u) => {
+                    const statusColor = u.recommendation === "Active" ? COLORS.green : u.recommendation === "Monitor" ? COLORS.yellow : COLORS.red;
+                    const timerColor = u.daysUntilRevoke <= 0 ? COLORS.red : u.daysUntilRevoke <= 14 ? COLORS.yellow : COLORS.green;
+                    const timerPercent = Math.min(100, Math.max(0, ((60 - u.daysSinceLastActivity) / 60) * 100));
+                    const fmtDate = (d: string | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" }) : "—";
+                    const fmtRepo = (r: string | null) => r ? r.split("/").pop() || r : "";
+
+                    return (
+                      <div
+                        key={u.username}
+                        style={{
+                          background: "rgba(255,255,255,0.03)",
+                          borderRadius: 12,
+                          border: `1px solid ${statusColor}33`,
+                          padding: 16,
+                        }}
+                      >
+                        {/* User header */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                          <img
+                            src={u.avatarUrl}
+                            alt={u.username}
+                            style={{ width: 36, height: 36, borderRadius: "50%", border: `2px solid ${statusColor}` }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 14, color: COLORS.textPrimary }}>{u.username}</div>
+                            <div style={{ fontSize: 11, color: COLORS.textMuted }}>{u.totalRepos} repos</div>
+                          </div>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              padding: "3px 10px",
+                              borderRadius: 9999,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              backgroundColor: `${statusColor}18`,
+                              color: statusColor,
+                              border: `1px solid ${statusColor}44`,
+                            }}
+                          >
+                            {u.recommendation === "Active" && <UserCheck size={12} />}
+                            {u.recommendation === "Monitor" && <Clock size={12} />}
+                            {u.recommendation === "Revoke License" && <AlertCircle size={12} />}
+                            {u.recommendation}
+                          </span>
+                        </div>
+
+                        {/* 60-day timer */}
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <span style={{ fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>60-Day License Timer</span>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: timerColor }}>
+                              {u.daysUntilRevoke <= 0 ? "EXPIRED" : `${u.daysUntilRevoke}d remaining`}
+                            </span>
+                          </div>
+                          <div style={{ width: "100%", height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.06)" }}>
+                            <div
+                              style={{
+                                width: `${Math.max(timerPercent, 0)}%`,
+                                height: "100%",
+                                borderRadius: 3,
+                                backgroundColor: timerColor,
+                                transition: "width 0.6s ease",
+                              }}
+                            />
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                            <span style={{ fontSize: 10, color: COLORS.textMuted }}>Last activity: {u.daysSinceLastActivity}d ago</span>
+                            <span style={{ fontSize: 10, color: COLORS.textMuted }}>Threshold: 60d</span>
+                          </div>
+                        </div>
+
+                        {/* Activity details */}
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 }}>
+                          <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ color: COLORS.textMuted, marginBottom: 3, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.05em" }}>Last Push</div>
+                            <div style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{fmtDate(u.lastPush)}</div>
+                            {u.lastPushRepo && <div style={{ color: COLORS.blue, fontSize: 10, marginTop: 2 }}>{fmtRepo(u.lastPushRepo)}</div>}
+                          </div>
+                          <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ color: COLORS.textMuted, marginBottom: 3, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.05em" }}>Last PR</div>
+                            <div style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{fmtDate(u.lastPR)}</div>
+                            {u.lastPRRepo && <div style={{ color: COLORS.blue, fontSize: 10, marginTop: 2 }}>{fmtRepo(u.lastPRRepo)}</div>}
+                          </div>
+                          <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ color: COLORS.textMuted, marginBottom: 3, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.05em" }}>Last Activity</div>
+                            <div style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{fmtDate(u.lastActivity)}</div>
+                            {u.lastActivityType && <div style={{ color: COLORS.blue, fontSize: 10, marginTop: 2 }}>{u.lastActivityType}{u.lastActivityRepo ? ` \u2022 ${fmtRepo(u.lastActivityRepo)}` : ""}</div>}
+                          </div>
+                          <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px" }}>
+                            <div style={{ color: COLORS.textMuted, marginBottom: 3, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.05em" }}>Repo Breakdown</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                              <span style={{ color: COLORS.green, fontWeight: 600 }}>{u.activeRepos} <span style={{ fontWeight: 400, fontSize: 9 }}>active</span></span>
+                              <span style={{ color: COLORS.yellow, fontWeight: 600 }}>{u.monitorRepos} <span style={{ fontWeight: 400, fontSize: 9 }}>monitor</span></span>
+                              <span style={{ color: COLORS.red, fontWeight: 600 }}>{u.revokeRepos} <span style={{ fontWeight: 400, fontSize: 9 }}>revoke</span></span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </GlassCard>
+            </>
+          )}
 
           <div style={{ height: 16 }} />
 
