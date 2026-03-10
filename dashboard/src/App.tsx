@@ -104,6 +104,21 @@ interface PullRequest {
   user: { login: string };
 }
 
+interface UserRepo {
+  full_name: string;
+  name: string;
+  description: string | null;
+  private: boolean;
+  language: string | null;
+  stargazers_count: number;
+  forks_count: number;
+  open_issues_count: number;
+  pushed_at: string;
+  updated_at: string;
+  size: number;
+  html_url: string;
+}
+
 /* ─── Palette ────────────────────────────────────────────────────────── */
 
 const COLORS = {
@@ -877,6 +892,47 @@ async function fetchOpenPRs(
   return resp.json();
 }
 
+async function fetchAllUserRepos(token: string): Promise<UserRepo[]> {
+  const allRepos: UserRepo[] = [];
+  for (let page = 1; page <= 10; page++) {
+    const resp = await fetch(
+      `${API}/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner`,
+      { headers: hdrs(token) }
+    );
+    if (!resp.ok) break;
+    const repos = await resp.json();
+    if (!repos.length) break;
+    allRepos.push(...repos);
+    if (repos.length < 100) break;
+  }
+  return allRepos;
+}
+
+async function fetchUserEvents(token: string, username: string): Promise<Map<string, { date: string; type: string; repo: string }>> {
+  const activityMap = new Map<string, { date: string; type: string; repo: string }>();
+  for (let page = 1; page <= 3; page++) {
+    const resp = await fetch(
+      `${API}/users/${username}/events?per_page=100&page=${page}`,
+      { headers: hdrs(token) }
+    );
+    if (!resp.ok) break;
+    const events = await resp.json();
+    if (!events.length) break;
+    for (const evt of events) {
+      const repoName = evt.repo?.name || "";
+      if (!activityMap.has(repoName)) {
+        activityMap.set(repoName, {
+          date: evt.created_at,
+          type: EVENT_LABELS[evt.type] || evt.type?.replace("Event", "") || "Unknown",
+          repo: repoName,
+        });
+      }
+    }
+    if (events.length < 100) break;
+  }
+  return activityMap;
+}
+
 /* ─── Main App ───────────────────────────────────────────────────────── */
 
 function App() {
@@ -886,6 +942,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [viewMode, setViewMode] = useState<"overview" | "detail">("overview");
 
   const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
   const [repoData, setRepoData] = useState<RepoData | null>(null);
@@ -895,27 +952,54 @@ function App() {
     frequency: CommitFrequency[];
   }>({ commits: [], frequency: [] });
   const [openPRs, setOpenPRs] = useState<PullRequest[]>([]);
+  const [allRepos, setAllRepos] = useState<UserRepo[]>([]);
+  const [userEventsMap, setUserEventsMap] = useState<Map<string, { date: string; type: string; repo: string }>>(new Map());
 
-  const loadData = useCallback(async () => {
-    if (!token || !repoSlug) return;
+  const loadOverview = useCallback(async () => {
+    if (!token) return;
     setLoading(true);
     setError(null);
 
     try {
-      const [ti, repo, contribs, cm, prs, eventsMap] = await Promise.all([
-        fetchTokenInfo(token),
-        fetchRepo(token, repoSlug),
-        fetchContributors(token, repoSlug),
-        fetchCommits(token, repoSlug),
-        fetchOpenPRs(token, repoSlug),
-        fetchRepoEvents(token, repoSlug),
-      ]);
-
+      const ti = await fetchTokenInfo(token);
       if (!ti.valid) {
         setError("Token is invalid or revoked.");
         setLoading(false);
         return;
       }
+      setTokenInfo(ti);
+
+      const [repos, evtMap] = await Promise.all([
+        fetchAllUserRepos(token),
+        fetchUserEvents(token, ti.user || ""),
+      ]);
+
+      setAllRepos(repos);
+      setUserEventsMap(evtMap);
+      setLastRefresh(new Date());
+      setSettingsOpen(false);
+      setViewMode("overview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch data");
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  const loadRepoDetail = useCallback(async (slug: string) => {
+    if (!token || !slug) return;
+    setLoading(true);
+    setError(null);
+    setRepoSlug(slug);
+
+    try {
+      const [repo, contribs, cm, prs, eventsMap] = await Promise.all([
+        fetchRepo(token, slug),
+        fetchContributors(token, slug),
+        fetchCommits(token, slug),
+        fetchOpenPRs(token, slug),
+        fetchRepoEvents(token, slug),
+      ]);
 
       // Merge events activity into contributors
       const now = new Date();
@@ -936,19 +1020,35 @@ function App() {
         return c;
       });
 
-      setTokenInfo(ti);
       setRepoData(repo);
       setContributors(enriched);
       setCommitData(cm);
       setOpenPRs(prs);
       setLastRefresh(new Date());
-      setSettingsOpen(false);
+      setViewMode("detail");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch data");
     } finally {
       setLoading(false);
     }
-  }, [token, repoSlug]);
+  }, [token]);
+
+  // Legacy loadData for settings modal
+  const loadData = useCallback(async () => {
+    if (!token) return;
+    if (repoSlug) {
+      await loadRepoDetail(repoSlug);
+    } else {
+      await loadOverview();
+    }
+  }, [token, repoSlug, loadRepoDetail, loadOverview]);
+
+  // Auto-load overview on mount when token is present
+  useEffect(() => {
+    if (token && !repoSlug && allRepos.length === 0 && !loading) {
+      loadOverview();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeCount = contributors.filter((c) => !c.inactive).length;
   const inactiveCount = contributors.filter((c) => c.inactive).length;
@@ -958,6 +1058,8 @@ function App() {
     { name: "Moderate (30-60d)", value: contributors.filter((c) => c.daysInactive >= 30 && c.daysInactive < 60).length, color: COLORS.yellow },
     { name: "Inactive (60d+)", value: contributors.filter((c) => c.daysInactive >= 60).length, color: COLORS.red },
   ].filter((d) => d.value > 0);
+
+  const now = new Date();
 
   return (
     <div
@@ -980,7 +1082,7 @@ function App() {
       {/* Settings Modal */}
       <SettingsModal
         open={settingsOpen}
-        onClose={() => { if (repoData) setSettingsOpen(false); }}
+        onClose={() => { if (allRepos.length > 0 || repoData) setSettingsOpen(false); }}
         token={token}
         setToken={setToken}
         repoSlug={repoSlug}
@@ -1023,41 +1125,74 @@ function App() {
             >
               License Dashboard
             </span>
-            {repoData && (
-              <a
-                href={repoData.html_url}
-                target="_blank"
-                rel="noopener noreferrer"
+            {viewMode === "detail" && repoData && (
+              <>
+                <button
+                  onClick={() => setViewMode("overview")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "3px 10px",
+                    borderRadius: 9999,
+                    backgroundColor: "rgba(255,255,255,0.06)",
+                    color: COLORS.textSecondary,
+                    fontSize: 11,
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    cursor: "pointer",
+                  }}
+                >
+                  ← All Repos
+                </button>
+                <a
+                  href={repoData.html_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "3px 10px",
+                    borderRadius: 9999,
+                    backgroundColor: "rgba(88,166,255,0.12)",
+                    color: COLORS.blue,
+                    fontSize: 12,
+                    textDecoration: "none",
+                    border: "1px solid rgba(88,166,255,0.2)",
+                  }}
+                >
+                  {repoData.full_name}
+                  {repoData.language && (
+                    <span
+                      style={{
+                        marginLeft: 4,
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        backgroundColor: "rgba(188,140,255,0.15)",
+                        color: COLORS.purple,
+                        fontSize: 10,
+                      }}
+                    >
+                      {repoData.language}
+                    </span>
+                  )}
+                  <ExternalLink size={10} />
+                </a>
+              </>
+            )}
+            {viewMode === "overview" && allRepos.length > 0 && (
+              <span
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
                   padding: "3px 10px",
                   borderRadius: 9999,
-                  backgroundColor: "rgba(88,166,255,0.12)",
-                  color: COLORS.blue,
+                  backgroundColor: "rgba(63,185,80,0.12)",
+                  color: COLORS.green,
                   fontSize: 12,
-                  textDecoration: "none",
-                  border: "1px solid rgba(88,166,255,0.2)",
+                  border: "1px solid rgba(63,185,80,0.2)",
                 }}
               >
-                {repoData.full_name}
-                {repoData.language && (
-                  <span
-                    style={{
-                      marginLeft: 4,
-                      padding: "1px 6px",
-                      borderRadius: 4,
-                      backgroundColor: "rgba(188,140,255,0.15)",
-                      color: COLORS.purple,
-                      fontSize: 10,
-                    }}
-                  >
-                    {repoData.language}
-                  </span>
-                )}
-                <ExternalLink size={10} />
-              </a>
+                {allRepos.length} Repos
+              </span>
             )}
           </div>
 
@@ -1067,9 +1202,9 @@ function App() {
                 Last refresh: {lastRefresh.toLocaleTimeString()}
               </span>
             )}
-            {repoData && (
+            {(repoData || allRepos.length > 0) && (
               <button
-                onClick={loadData}
+                onClick={viewMode === "detail" ? () => loadRepoDetail(repoSlug) : loadOverview}
                 disabled={loading}
                 style={{
                   display: "flex",
@@ -1111,8 +1246,311 @@ function App() {
         </div>
       </nav>
 
-      {/* Dashboard Content */}
-      {repoData && tokenInfo && (
+      {/* Overview Mode - All Repos */}
+      {viewMode === "overview" && allRepos.length > 0 && (
+        <div style={{ maxWidth: 1440, margin: "0 auto", padding: "24px" }}>
+          {/* Overview KPI Cards */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+              gap: 16,
+              marginBottom: 28,
+            }}
+          >
+            <KpiCard
+              icon={<HardDrive size={20} color={COLORS.blue} />}
+              label="Total Repos"
+              value={allRepos.length}
+              color={COLORS.blue}
+              delay={0}
+            />
+            <KpiCard
+              icon={<Lock size={20} color={COLORS.orange} />}
+              label="Private"
+              value={allRepos.filter((r) => r.private).length}
+              color={COLORS.orange}
+              delay={50}
+            />
+            <KpiCard
+              icon={<ExternalLink size={20} color={COLORS.green} />}
+              label="Public"
+              value={allRepos.filter((r) => !r.private).length}
+              color={COLORS.green}
+              delay={100}
+            />
+            <KpiCard
+              icon={<Star size={20} color={COLORS.yellow} />}
+              label="Total Stars"
+              value={allRepos.reduce((s, r) => s + r.stargazers_count, 0)}
+              color={COLORS.yellow}
+              delay={150}
+            />
+            <KpiCard
+              icon={<Zap size={20} color={COLORS.green} />}
+              label="Active (<30d)"
+              value={allRepos.filter((r) => {
+                const d = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+                return d < 30;
+              }).length}
+              color={COLORS.green}
+              delay={200}
+            />
+            <KpiCard
+              icon={<Clock size={20} color={COLORS.yellow} />}
+              label="Moderate"
+              value={allRepos.filter((r) => {
+                const d = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+                return d >= 30 && d < 60;
+              }).length}
+              color={COLORS.yellow}
+              delay={250}
+            />
+            <KpiCard
+              icon={<UserX size={20} color={COLORS.red} />}
+              label="Inactive (60d+)"
+              value={allRepos.filter((r) => {
+                const d = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+                return d >= 60;
+              }).length}
+              color={COLORS.red}
+              delay={300}
+            />
+          </div>
+
+          {/* Repos Table */}
+          <GlassCard delay={100}>
+            <SectionHeader icon={<HardDrive size={18} />} title="All Repositories" />
+            <div style={{ overflowX: "auto" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 13,
+                }}
+              >
+                <thead>
+                  <tr
+                    style={{
+                      borderBottom: `1px solid ${COLORS.cardBorder}`,
+                    }}
+                  >
+                    {["", "Repository", "Language", "Stars", "Forks", "Issues", "Last Push", "Days", "Last Activity", "Type"].map(
+                      (h) => (
+                        <th
+                          key={h}
+                          style={{
+                            textAlign: h === "Repository" ? "left" : "center",
+                            padding: "10px 8px",
+                            color: COLORS.textMuted,
+                            fontWeight: 500,
+                            fontSize: 11,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.05em",
+                          }}
+                        >
+                          {h}
+                        </th>
+                      )
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allRepos.map((repo) => {
+                    const daysSincePush = Math.floor(
+                      (now.getTime() - new Date(repo.pushed_at).getTime()) / 86400000
+                    );
+                    const statusColor =
+                      daysSincePush >= 60
+                        ? COLORS.red
+                        : daysSincePush >= 30
+                        ? COLORS.yellow
+                        : COLORS.green;
+                    const evt = userEventsMap.get(repo.full_name);
+                    return (
+                      <tr
+                        key={repo.full_name}
+                        onClick={() => {
+                          setRepoSlug(repo.full_name);
+                          loadRepoDetail(repo.full_name);
+                        }}
+                        style={{
+                          borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                          cursor: "pointer",
+                          transition: "background-color 0.15s",
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.backgroundColor =
+                            "rgba(255,255,255,0.04)")
+                        }
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.backgroundColor = "transparent")
+                        }
+                      >
+                        <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                          <StatusDot days={daysSincePush} />
+                        </td>
+                        <td style={{ padding: "10px 8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ color: COLORS.blue, fontWeight: 500 }}>
+                              {repo.name}
+                            </span>
+                            {repo.private && (
+                              <Lock size={10} color={COLORS.textMuted} />
+                            )}
+                            <ChevronRight size={12} color={COLORS.textMuted} />
+                          </div>
+                          {repo.description && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: COLORS.textMuted,
+                                marginTop: 2,
+                                maxWidth: 400,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {repo.description}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                          {repo.language ? (
+                            <Pill text={repo.language} />
+                          ) : (
+                            <span style={{ color: COLORS.textMuted }}>—</span>
+                          )}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            color: COLORS.yellow,
+                          }}
+                        >
+                          {repo.stargazers_count > 0
+                            ? repo.stargazers_count.toLocaleString()
+                            : "—"}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            color: COLORS.textSecondary,
+                          }}
+                        >
+                          {repo.forks_count > 0 ? repo.forks_count : "—"}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            color:
+                              repo.open_issues_count > 0
+                                ? COLORS.orange
+                                : COLORS.textMuted,
+                          }}
+                        >
+                          {repo.open_issues_count > 0
+                            ? repo.open_issues_count
+                            : "—"}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            color: COLORS.textSecondary,
+                            fontSize: 12,
+                          }}
+                        >
+                          {new Date(repo.pushed_at).toLocaleDateString()}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            fontWeight: 600,
+                            color: statusColor,
+                          }}
+                        >
+                          {daysSincePush}d
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            color: COLORS.textSecondary,
+                            fontSize: 12,
+                          }}
+                        >
+                          {evt
+                            ? new Date(evt.date).toLocaleDateString()
+                            : "—"}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            fontSize: 11,
+                            color: COLORS.textMuted,
+                          }}
+                        >
+                          {evt ? evt.type : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </GlassCard>
+
+          {/* Token Health in Overview */}
+          {tokenInfo && tokenInfo.rateLimit && (
+            <div style={{ marginTop: 24 }}>
+              <GlassCard delay={200}>
+                <SectionHeader icon={<Shield size={18} />} title="Token Health" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>
+                      Rate Limit
+                    </div>
+                    <ProgressBar
+                      value={tokenInfo.rateLimit.remaining}
+                      max={tokenInfo.rateLimit.limit}
+                      color={
+                        tokenInfo.rateLimit.remaining / tokenInfo.rateLimit.limit > 0.5
+                          ? COLORS.green
+                          : tokenInfo.rateLimit.remaining / tokenInfo.rateLimit.limit > 0.2
+                          ? COLORS.yellow
+                          : COLORS.red
+                      }
+                    />
+                    <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
+                      {tokenInfo.rateLimit.remaining.toLocaleString()} / {tokenInfo.rateLimit.limit.toLocaleString()} remaining
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>
+                      Scopes
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {tokenInfo.scopes.map((s) => (
+                        <Pill key={s} text={s} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </GlassCard>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Detail Mode - Single Repo Dashboard */}
+      {viewMode === "detail" && repoData && tokenInfo && (
         <div style={{ maxWidth: 1440, margin: "0 auto", padding: "24px" }}>
           {/* KPI Cards Row */}
           <div
