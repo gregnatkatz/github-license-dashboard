@@ -1,0 +1,1 @@
+# GitHub License Dashboard\n\nGitHub License Activity Collector + Dashboard
