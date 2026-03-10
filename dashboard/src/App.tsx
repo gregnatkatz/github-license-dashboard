@@ -34,6 +34,9 @@ import {
   FileText,
   Zap,
   ChevronRight,
+  Plus,
+  Trash2,
+  User,
 } from "lucide-react";
 import "./App.css";
 
@@ -117,6 +120,13 @@ interface UserRepo {
   updated_at: string;
   size: number;
   html_url: string;
+  _owner: string; // derived from full_name, tracks which account owns this repo
+}
+
+interface TokenEntry {
+  token: string;
+  user: string; // resolved username
+  label: string; // display label
 }
 
 /* ─── Palette ────────────────────────────────────────────────────────── */
@@ -428,25 +438,40 @@ function LockedCard({
 function SettingsModal({
   open,
   onClose,
-  token,
-  setToken,
-  repoSlug,
-  setRepoSlug,
+  tokenInputs,
+  setTokenInputs,
   onSubmit,
   loading,
   error,
+  resolvedTokens,
 }: {
   open: boolean;
   onClose: () => void;
-  token: string;
-  setToken: (v: string) => void;
-  repoSlug: string;
-  setRepoSlug: (v: string) => void;
+  tokenInputs: string[];
+  setTokenInputs: (v: string[]) => void;
   onSubmit: () => void;
   loading: boolean;
   error: string | null;
+  resolvedTokens: TokenEntry[];
 }) {
   if (!open) return null;
+
+  const updateToken = (idx: number, val: string) => {
+    const next = [...tokenInputs];
+    next[idx] = val;
+    setTokenInputs(next);
+  };
+
+  const addToken = () => {
+    setTokenInputs([...tokenInputs, ""]);
+  };
+
+  const removeToken = (idx: number) => {
+    if (tokenInputs.length <= 1) return;
+    setTokenInputs(tokenInputs.filter((_, i) => i !== idx));
+  };
+
+  const hasAnyToken = tokenInputs.some((t) => t.trim().length > 0);
 
   return (
     <div
@@ -468,11 +493,13 @@ function SettingsModal({
         style={{
           ...glassCard,
           width: "100%",
-          maxWidth: 440,
+          maxWidth: 480,
           padding: "32px",
           position: "relative",
           border: `1px solid ${COLORS.cardBorder}`,
           backgroundColor: COLORS.surface,
+          maxHeight: "80vh",
+          overflowY: "auto",
         }}
       >
         <button
@@ -516,60 +543,109 @@ function SettingsModal({
             letterSpacing: "0.05em",
           }}
         >
-          GitHub Token
+          GitHub Tokens
         </label>
-        <input
-          type="password"
-          placeholder="ghp_..."
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
+        <p
           style={{
-            width: "100%",
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: `1px solid ${COLORS.cardBorder}`,
-            backgroundColor: "rgba(255,255,255,0.04)",
-            color: COLORS.textPrimary,
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 13,
-            outline: "none",
-            marginBottom: 16,
-            boxSizing: "border-box",
-          }}
-        />
-
-        <label
-          style={{
-            display: "block",
-            fontSize: 12,
-            color: COLORS.textSecondary,
-            marginBottom: 6,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
+            fontSize: 11,
+            color: COLORS.textMuted,
+            marginBottom: 12,
+            lineHeight: 1.4,
           }}
         >
-          Repository
-        </label>
-        <input
-          type="text"
-          placeholder="owner/repo"
-          value={repoSlug}
-          onChange={(e) => setRepoSlug(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+          Add one or more GitHub PATs to view repos from multiple accounts.
+        </p>
+
+        {tokenInputs.map((tk, idx) => {
+          const resolved = resolvedTokens.find((rt) => rt.token === tk);
+          return (
+            <div key={idx} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+              <div style={{ flex: 1, position: "relative" }}>
+                <input
+                  type="password"
+                  placeholder={`Token ${idx + 1} — ghp_...`}
+                  value={tk}
+                  onChange={(e) => updateToken(idx, e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+                  style={{
+                    width: "100%",
+                    padding: "10px 14px",
+                    paddingRight: resolved ? 100 : 14,
+                    borderRadius: 10,
+                    border: `1px solid ${resolved ? "rgba(63,185,80,0.3)" : COLORS.cardBorder}`,
+                    backgroundColor: "rgba(255,255,255,0.04)",
+                    color: COLORS.textPrimary,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 13,
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
+                {resolved && (
+                  <span
+                    style={{
+                      position: "absolute",
+                      right: 10,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      fontSize: 11,
+                      color: COLORS.green,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    <User size={10} />
+                    {resolved.user}
+                  </span>
+                )}
+              </div>
+              {tokenInputs.length > 1 && (
+                <button
+                  onClick={() => removeToken(idx)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    border: `1px solid rgba(248,81,73,0.3)`,
+                    backgroundColor: "rgba(248,81,73,0.08)",
+                    color: COLORS.red,
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                  title="Remove token"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+
+        <button
+          onClick={addToken}
           style={{
-            width: "100%",
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: `1px solid ${COLORS.cardBorder}`,
-            backgroundColor: "rgba(255,255,255,0.04)",
-            color: COLORS.textPrimary,
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 13,
-            outline: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "8px 14px",
+            borderRadius: 8,
+            border: `1px dashed ${COLORS.cardBorder}`,
+            backgroundColor: "transparent",
+            color: COLORS.textSecondary,
+            cursor: "pointer",
+            fontSize: 12,
             marginBottom: 20,
-            boxSizing: "border-box",
+            width: "100%",
+            justifyContent: "center",
           }}
-        />
+        >
+          <Plus size={14} />
+          Add another account
+        </button>
 
         {error && (
           <div
@@ -593,7 +669,7 @@ function SettingsModal({
 
         <button
           onClick={onSubmit}
-          disabled={loading || !token || !repoSlug}
+          disabled={loading || !hasAnyToken}
           style={{
             width: "100%",
             padding: "12px",
@@ -604,8 +680,8 @@ function SettingsModal({
             fontFamily: "'Syne', sans-serif",
             fontWeight: 600,
             fontSize: 14,
-            cursor: loading || !token || !repoSlug ? "not-allowed" : "pointer",
-            opacity: loading || !token || !repoSlug ? 0.5 : 1,
+            cursor: loading || !hasAnyToken ? "not-allowed" : "pointer",
+            opacity: loading || !hasAnyToken ? 0.5 : 1,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -632,7 +708,7 @@ function SettingsModal({
             lineHeight: 1.5,
           }}
         >
-          Token is stored in memory only and never persisted.
+          Tokens are stored in memory only and never persisted.
         </p>
       </div>
     </div>
@@ -936,7 +1012,9 @@ async function fetchUserEvents(token: string, username: string): Promise<Map<str
 /* ─── Main App ───────────────────────────────────────────────────────── */
 
 function App() {
-  const [token, setToken] = useState("");
+  const [tokenInputs, setTokenInputs] = useState<string[]>([""]);
+  const [resolvedTokens, setResolvedTokens] = useState<TokenEntry[]>([]);
+  const [ownerTokenMap, setOwnerTokenMap] = useState<Map<string, string>>(new Map());
   const [repoSlug, setRepoSlug] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -955,27 +1033,86 @@ function App() {
   const [allRepos, setAllRepos] = useState<UserRepo[]>([]);
   const [userEventsMap, setUserEventsMap] = useState<Map<string, { date: string; type: string; repo: string }>>(new Map());
 
+  // Helper: get the token for a given repo owner
+  const getTokenForOwner = useCallback((owner: string): string => {
+    return ownerTokenMap.get(owner) || resolvedTokens[0]?.token || tokenInputs[0] || "";
+  }, [ownerTokenMap, resolvedTokens, tokenInputs]);
+
   const loadOverview = useCallback(async () => {
-    if (!token) return;
+    const validInputs = tokenInputs.filter((t) => t.trim().length > 0);
+    if (validInputs.length === 0) return;
     setLoading(true);
     setError(null);
 
     try {
-      const ti = await fetchTokenInfo(token);
-      if (!ti.valid) {
-        setError("Token is invalid or revoked.");
+      // Validate all tokens in parallel
+      const tokenInfos = await Promise.all(validInputs.map((t) => fetchTokenInfo(t)));
+      const validPairs: { token: string; info: TokenInfo }[] = [];
+      const errors: string[] = [];
+
+      tokenInfos.forEach((ti, i) => {
+        if (ti.valid) {
+          validPairs.push({ token: validInputs[i], info: ti });
+        } else {
+          errors.push(`Token ${i + 1} is invalid or revoked.`);
+        }
+      });
+
+      if (validPairs.length === 0) {
+        setError(errors.join(" "));
         setLoading(false);
         return;
       }
-      setTokenInfo(ti);
 
-      const [repos, evtMap] = await Promise.all([
-        fetchAllUserRepos(token),
-        fetchUserEvents(token, ti.user || ""),
-      ]);
+      // Use first valid token's info for display
+      setTokenInfo(validPairs[0].info);
 
-      setAllRepos(repos);
-      setUserEventsMap(evtMap);
+      // Build resolved tokens list
+      const resolved: TokenEntry[] = validPairs.map((p) => ({
+        token: p.token,
+        user: p.info.user || "unknown",
+        label: p.info.user || "unknown",
+      }));
+      setResolvedTokens(resolved);
+
+      // Fetch repos and events from all accounts in parallel
+      const allResults = await Promise.all(
+        validPairs.map(async (p) => {
+          const [repos, evtMap] = await Promise.all([
+            fetchAllUserRepos(p.token),
+            fetchUserEvents(p.token, p.info.user || ""),
+          ]);
+          return { token: p.token, user: p.info.user || "", repos, evtMap };
+        })
+      );
+
+      // Merge all repos, tag with owner, build owner→token map
+      const mergedRepos: UserRepo[] = [];
+      const mergedEvents = new Map<string, { date: string; type: string; repo: string }>();
+      const newOwnerTokenMap = new Map<string, string>();
+
+      for (const result of allResults) {
+        for (const repo of result.repos) {
+          mergedRepos.push({ ...repo, _owner: result.user });
+          const owner = repo.full_name.split("/")[0];
+          if (!newOwnerTokenMap.has(owner)) {
+            newOwnerTokenMap.set(owner, result.token);
+          }
+        }
+        // Merge events
+        result.evtMap.forEach((val, key) => {
+          if (!mergedEvents.has(key)) {
+            mergedEvents.set(key, val);
+          }
+        });
+      }
+
+      // Sort by pushed_at descending
+      mergedRepos.sort((a, b) => new Date(b.pushed_at).getTime() - new Date(a.pushed_at).getTime());
+
+      setOwnerTokenMap(newOwnerTokenMap);
+      setAllRepos(mergedRepos);
+      setUserEventsMap(mergedEvents);
       setLastRefresh(new Date());
       setSettingsOpen(false);
       setViewMode("overview");
@@ -984,21 +1121,23 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [tokenInputs]);
 
   const loadRepoDetail = useCallback(async (slug: string) => {
-    if (!token || !slug) return;
+    const owner = slug.split("/")[0];
+    const tkn = getTokenForOwner(owner);
+    if (!tkn || !slug) return;
     setLoading(true);
     setError(null);
     setRepoSlug(slug);
 
     try {
       const [repo, contribs, cm, prs, eventsMap] = await Promise.all([
-        fetchRepo(token, slug),
-        fetchContributors(token, slug),
-        fetchCommits(token, slug),
-        fetchOpenPRs(token, slug),
-        fetchRepoEvents(token, slug),
+        fetchRepo(tkn, slug),
+        fetchContributors(tkn, slug),
+        fetchCommits(tkn, slug),
+        fetchOpenPRs(tkn, slug),
+        fetchRepoEvents(tkn, slug),
       ]);
 
       // Merge events activity into contributors
@@ -1031,21 +1170,17 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [getTokenForOwner]);
 
-  // Legacy loadData for settings modal
+  // Load overview from settings
   const loadData = useCallback(async () => {
-    if (!token) return;
-    if (repoSlug) {
-      await loadRepoDetail(repoSlug);
-    } else {
-      await loadOverview();
-    }
-  }, [token, repoSlug, loadRepoDetail, loadOverview]);
+    await loadOverview();
+  }, [loadOverview]);
 
-  // Auto-load overview on mount when token is present
+  // Auto-load overview on mount when tokens are present
   useEffect(() => {
-    if (token && !repoSlug && allRepos.length === 0 && !loading) {
+    const hasToken = tokenInputs.some((t) => t.trim().length > 0);
+    if (hasToken && allRepos.length === 0 && !loading) {
       loadOverview();
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1083,13 +1218,12 @@ function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => { if (allRepos.length > 0 || repoData) setSettingsOpen(false); }}
-        token={token}
-        setToken={setToken}
-        repoSlug={repoSlug}
-        setRepoSlug={setRepoSlug}
+        tokenInputs={tokenInputs}
+        setTokenInputs={setTokenInputs}
         onSubmit={loadData}
         loading={loading}
         error={error}
+        resolvedTokens={resolvedTokens}
       />
 
       {/* Top Nav Bar */}
@@ -1181,18 +1315,34 @@ function App() {
               </>
             )}
             {viewMode === "overview" && allRepos.length > 0 && (
-              <span
-                style={{
-                  padding: "3px 10px",
-                  borderRadius: 9999,
-                  backgroundColor: "rgba(63,185,80,0.12)",
-                  color: COLORS.green,
-                  fontSize: 12,
-                  border: "1px solid rgba(63,185,80,0.2)",
-                }}
-              >
-                {allRepos.length} Repos
-              </span>
+              <>
+                <span
+                  style={{
+                    padding: "3px 10px",
+                    borderRadius: 9999,
+                    backgroundColor: "rgba(63,185,80,0.12)",
+                    color: COLORS.green,
+                    fontSize: 12,
+                    border: "1px solid rgba(63,185,80,0.2)",
+                  }}
+                >
+                  {allRepos.length} Repos
+                </span>
+                {resolvedTokens.length > 1 && (
+                  <span
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: 9999,
+                      backgroundColor: "rgba(88,166,255,0.12)",
+                      color: COLORS.blue,
+                      fontSize: 11,
+                      border: "1px solid rgba(88,166,255,0.2)",
+                    }}
+                  >
+                    {resolvedTokens.map((rt) => rt.user).join(" + ")}
+                  </span>
+                )}
+              </>
             )}
           </div>
 
@@ -1307,8 +1457,8 @@ function App() {
               delay={250}
             />
             <KpiCard
-              icon={<UserX size={20} color={COLORS.red} />}
-              label="Inactive (60d+)"
+              icon={<AlertCircle size={20} color={COLORS.red} />}
+              label="Revoke Recommended"
               value={allRepos.filter((r) => {
                 const d = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
                 return d >= 60;
@@ -1316,7 +1466,50 @@ function App() {
               color={COLORS.red}
               delay={300}
             />
+            {resolvedTokens.length > 1 && (
+              <KpiCard
+                icon={<Users size={20} color={COLORS.purple} />}
+                label="Accounts"
+                value={resolvedTokens.length}
+                color={COLORS.purple}
+                delay={350}
+              />
+            )}
           </div>
+
+          {/* License Recapture Summary Banner */}
+          {(() => {
+            const revokeCount = allRepos.filter((r) => {
+              const d = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+              return d >= 60;
+            }).length;
+            const monitorCount = allRepos.filter((r) => {
+              const d = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+              return d >= 30 && d < 60;
+            }).length;
+            if (revokeCount === 0 && monitorCount === 0) return null;
+            return (
+              <GlassCard delay={50}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "4px 0" }}>
+                  <AlertCircle size={20} color={COLORS.red} />
+                  <div>
+                    <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 15, color: COLORS.textPrimary, marginBottom: 4 }}>
+                      License Recapture Summary
+                    </div>
+                    <div style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+                      <span style={{ color: COLORS.red, fontWeight: 600 }}>{revokeCount} repos</span> inactive 60+ days — recommend license revoke.
+                      {monitorCount > 0 && (
+                        <> <span style={{ color: COLORS.yellow, fontWeight: 600 }}>{monitorCount} repos</span> approaching threshold (30-60d) — monitor closely.</>
+                      )}
+                      {" "}Threshold: <span style={{ color: COLORS.blue }}>60 days</span> of no push activity.
+                    </div>
+                  </div>
+                </div>
+              </GlassCard>
+            );
+          })()}
+
+          <div style={{ height: 16 }} />
 
           {/* Repos Table */}
           <GlassCard delay={100}>
@@ -1335,7 +1528,7 @@ function App() {
                       borderBottom: `1px solid ${COLORS.cardBorder}`,
                     }}
                   >
-                    {["", "Repository", "Language", "Stars", "Forks", "Issues", "Last Push", "Days", "Last Activity", "Type"].map(
+                    {["", "Repository", "Owner", "Language", "Stars", "Forks", "Issues", "Last Push", "Days", "Last Activity", "Type", "Recommendation"].map(
                       (h) => (
                         <th
                           key={h}
@@ -1347,6 +1540,7 @@ function App() {
                             fontSize: 11,
                             textTransform: "uppercase",
                             letterSpacing: "0.05em",
+                            whiteSpace: "nowrap",
                           }}
                         >
                           {h}
@@ -1415,6 +1609,16 @@ function App() {
                               {repo.description}
                             </div>
                           )}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            fontSize: 12,
+                            color: COLORS.blue,
+                          }}
+                        >
+                          {repo._owner || repo.full_name.split("/")[0]}
                         </td>
                         <td style={{ padding: "10px 8px", textAlign: "center" }}>
                           {repo.language ? (
@@ -1498,6 +1702,69 @@ function App() {
                           }}
                         >
                           {evt ? evt.type : "—"}
+                        </td>
+                        <td
+                          style={{
+                            padding: "10px 8px",
+                            textAlign: "center",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {daysSincePush >= 60 ? (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                padding: "3px 10px",
+                                borderRadius: 9999,
+                                backgroundColor: "rgba(248,81,73,0.12)",
+                                color: COLORS.red,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                border: "1px solid rgba(248,81,73,0.25)",
+                              }}
+                            >
+                              <AlertCircle size={10} />
+                              Revoke License
+                            </span>
+                          ) : daysSincePush >= 30 ? (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                padding: "3px 10px",
+                                borderRadius: 9999,
+                                backgroundColor: "rgba(210,153,34,0.12)",
+                                color: COLORS.yellow,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                border: "1px solid rgba(210,153,34,0.25)",
+                              }}
+                            >
+                              <Clock size={10} />
+                              Monitor
+                            </span>
+                          ) : (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                padding: "3px 10px",
+                                borderRadius: 9999,
+                                backgroundColor: "rgba(63,185,80,0.12)",
+                                color: COLORS.green,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                border: "1px solid rgba(63,185,80,0.25)",
+                              }}
+                            >
+                              <UserCheck size={10} />
+                              Active
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );
