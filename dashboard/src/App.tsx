@@ -78,6 +78,9 @@ interface Contributor {
   lastCommit: string;
   daysInactive: number;
   inactive: boolean;
+  lastActivity: string | null;
+  lastActivityType: string | null;
+  dayssinceActivity: number | null;
 }
 
 interface CommitEntry {
@@ -747,6 +750,9 @@ async function fetchContributors(
           lastCommit: commitDate.toISOString(),
           daysInactive: days,
           inactive: days >= 60,
+          lastActivity: null,
+          lastActivityType: null,
+          dayssinceActivity: null,
         });
       }
     }
@@ -799,6 +805,66 @@ async function fetchCommits(
   return { commits, frequency };
 }
 
+interface UserActivity {
+  login: string;
+  lastActivity: string;
+  activityType: string;
+}
+
+const EVENT_LABELS: Record<string, string> = {
+  PushEvent: "Push",
+  PullRequestEvent: "PR",
+  IssueCommentEvent: "Comment",
+  IssuesEvent: "Issue",
+  PullRequestReviewEvent: "Review",
+  PullRequestReviewCommentEvent: "Review Comment",
+  CreateEvent: "Create",
+  DeleteEvent: "Delete",
+  ForkEvent: "Fork",
+  WatchEvent: "Star",
+  CommitCommentEvent: "Commit Comment",
+  ReleaseEvent: "Release",
+  MemberEvent: "Member",
+  GollumEvent: "Wiki",
+};
+
+async function fetchRepoEvents(
+  token: string,
+  repo: string
+): Promise<Map<string, UserActivity>> {
+  const activityMap = new Map<string, UserActivity>();
+
+  for (let page = 1; page <= 10; page++) {
+    const resp = await fetch(
+      `${API}/repos/${repo}/events?per_page=100&page=${page}`,
+      { headers: hdrs(token) }
+    );
+    if (!resp.ok) break;
+    const events = await resp.json();
+    if (!events.length) break;
+
+    for (const evt of events) {
+      const login = evt.actor?.login;
+      if (!login) continue;
+      const date = evt.created_at;
+      const type = evt.type || "Unknown";
+
+      const existing = activityMap.get(login);
+      if (!existing || new Date(date) > new Date(existing.lastActivity)) {
+        activityMap.set(login, {
+          login,
+          lastActivity: date,
+          activityType: EVENT_LABELS[type] || type.replace("Event", ""),
+        });
+      }
+    }
+
+    if (events.length < 100) break;
+  }
+
+  return activityMap;
+}
+
 async function fetchOpenPRs(
   token: string,
   repo: string
@@ -836,12 +902,13 @@ function App() {
     setError(null);
 
     try {
-      const [ti, repo, contribs, cm, prs] = await Promise.all([
+      const [ti, repo, contribs, cm, prs, eventsMap] = await Promise.all([
         fetchTokenInfo(token),
         fetchRepo(token, repoSlug),
         fetchContributors(token, repoSlug),
         fetchCommits(token, repoSlug),
         fetchOpenPRs(token, repoSlug),
+        fetchRepoEvents(token, repoSlug),
       ]);
 
       if (!ti.valid) {
@@ -850,9 +917,28 @@ function App() {
         return;
       }
 
+      // Merge events activity into contributors
+      const now = new Date();
+      const enriched = contribs.map((c) => {
+        const evt = eventsMap.get(c.login);
+        if (evt) {
+          const actDate = new Date(evt.lastActivity);
+          const daysSince = Math.floor(
+            (now.getTime() - actDate.getTime()) / (1000 * 60 * 60 * 24)
+          );
+          return {
+            ...c,
+            lastActivity: evt.lastActivity,
+            lastActivityType: evt.activityType,
+            dayssinceActivity: daysSince,
+          };
+        }
+        return c;
+      });
+
       setTokenInfo(ti);
       setRepoData(repo);
-      setContributors(contribs);
+      setContributors(enriched);
       setCommitData(cm);
       setOpenPRs(prs);
       setLastRefresh(new Date());
@@ -1219,19 +1305,26 @@ function App() {
                     <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
                       <th style={{ textAlign: "left", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>User</th>
                       <th style={{ textAlign: "left", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>Last Commit</th>
-                      <th style={{ textAlign: "right", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>Days</th>
+                      <th style={{ textAlign: "left", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>Last Activity</th>
+                      <th style={{ textAlign: "left", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>Type</th>
+                      <th style={{ textAlign: "right", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>Idle</th>
                       <th style={{ textAlign: "center", padding: "8px 4px", color: COLORS.textMuted, fontWeight: 500 }}>Status</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {contributors.map((c) => (
+                    {contributors.map((c) => {
+                      // Use most recent of commit or activity for idle/status
+                      const effectiveDays = c.dayssinceActivity !== null
+                        ? Math.min(c.daysInactive, c.dayssinceActivity)
+                        : c.daysInactive;
+                      return (
                       <tr
                         key={c.login}
                         style={{
                           borderBottom: "1px solid rgba(255,255,255,0.03)",
-                          backgroundColor: c.inactive
+                          backgroundColor: effectiveDays >= 60
                             ? "rgba(248,81,73,0.04)"
-                            : c.daysInactive >= 30
+                            : effectiveDays >= 30
                             ? "rgba(210,153,34,0.04)"
                             : "transparent",
                         }}
@@ -1258,14 +1351,39 @@ function App() {
                         <td style={{ padding: "8px 4px", color: COLORS.textSecondary }}>
                           {new Date(c.lastCommit).toLocaleDateString()}
                         </td>
+                        <td style={{ padding: "8px 4px", color: c.lastActivity ? COLORS.textPrimary : COLORS.textMuted }}>
+                          {c.lastActivity
+                            ? new Date(c.lastActivity).toLocaleDateString()
+                            : "—"}
+                        </td>
+                        <td style={{ padding: "8px 4px" }}>
+                          {c.lastActivityType ? (
+                            <span
+                              style={{
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                fontSize: 10,
+                                backgroundColor: "rgba(88,166,255,0.1)",
+                                color: COLORS.blue,
+                                border: "1px solid rgba(88,166,255,0.2)",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {c.lastActivityType}
+                            </span>
+                          ) : (
+                            <span style={{ color: COLORS.textMuted }}>—</span>
+                          )}
+                        </td>
                         <td style={{ padding: "8px 4px", textAlign: "right", color: COLORS.textSecondary }}>
-                          {c.daysInactive}
+                          {effectiveDays}d
                         </td>
                         <td style={{ padding: "8px 4px", textAlign: "center" }}>
-                          <StatusDot days={c.daysInactive} />
+                          <StatusDot days={effectiveDays} />
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
