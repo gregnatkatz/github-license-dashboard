@@ -8,13 +8,23 @@ Accurate GitHub license usage tracking for Copilot (Business & Enterprise) and G
 
 The dashboard includes an enterprise-level org panel showing Copilot seat assignments, org members, and license reassignment recommendations:
 
-![Enterprise License Management Panel](/home/ubuntu/screenshots/github_license_010541.png)
+![Enterprise License Management Panel](docs/images/enterprise-panel.png)
 
 **Key features visible:**
 - KPI cards: 41 repos, 18 private, 23 public, 3 active, 2 moderate, 36 revoke recommended
 - User License Status with 60-day countdown timer and last activity dates
 - Enterprise License Management panel showing 4,480 Microsoft org members
 - Copilot billing scope error banner (expected without org admin token — graceful handling)
+
+### Video Walkthroughs
+
+**Enterprise Dashboard Testing** — Org slug entry, enterprise panel, org members, repos table:
+
+https://github.com/gregnatkatz/github-license-dashboard/raw/devin/1773157222-github-license-dashboard/docs/images/enterprise-testing.mp4
+
+**User License Status + 60-Day Timer** — Per-user license cards, last activity dates, revoke recommendations:
+
+https://github.com/gregnatkatz/github-license-dashboard/raw/devin/1773157222-github-license-dashboard/docs/images/user-license-status.mp4
 
 ### License Manager Script (Mock Mode)
 
