@@ -74,7 +74,7 @@ python repo_test.py --repo owner/repo-name
 
 ### What This Unlocks
 
-GitHub's built-in analytics are inaccurate — they use 30-day buckets, have 24-48h lag, and don't expose per-user last-active timestamps. The collector pulls directly from the APIs that back those dashboards to get exact timestamps.
+The collector pulls directly from GitHub's APIs to get exact per-user last-active timestamps, enabling precise license usage tracking.
 
 | Signal | What It Provides | Required Scope |
 |--------|-----------------|----------------|
