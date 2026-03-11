@@ -2,6 +2,41 @@
 
 Accurate GitHub license usage tracking for Copilot (Business & Enterprise) and GitHub Enterprise members. Identifies inactive users for license recapture using a **60-day inactivity threshold**.
 
+## Demo Videos
+
+### Multi-Account Dashboard Overview
+Full walkthrough of the dashboard with multi-account support, KPI cards, license recommendations, and drill-down:
+
+![Multi-Account Overview](/home/ubuntu/screencasts/rec-3e37a57259964f7ba3a972cb8bc4b99e-edited.mp4)
+
+### User License Status + 60-Day Timer
+Per-user license status cards showing last activity, 60-day countdown timer, and revoke recommendations:
+
+![User License Status](/home/ubuntu/screencasts/rec-7b78281e0c464ffebeb4420be1da5af8-edited.mp4)
+
+### License Manager Script (Mock Mode)
+Python script identifying inactive Copilot seats and simulating Entra ID license reassignment:
+
+```
+$ python license_manager.py --mock
+
+  Step 2: Categorize Seats by Activity
+  Active   (<30d):  9 seats
+  Monitor  (30-60d): 4 seats
+  Reassign (>60d):  7 seats
+
+  Step 4: Remove Inactive Copilot Seats
+    [MOCK] Removed Copilot seat for: hank-legacy
+    [MOCK] Removed Copilot seat for: kate-manager
+    ...
+
+  Step 5: Entra ID License Reassignment
+    [MOCK] Found Entra user: hank-legacy@contoso.com
+    [MOCK] Would disable GitHub Enterprise license
+```
+
+---
+
 ## Live Dashboard
 
 A React dashboard (dark glassmorphic theme) that visualizes repo and license data in real time from the GitHub API. Supports multiple accounts in a single view.
@@ -21,6 +56,12 @@ A React dashboard (dark glassmorphic theme) that visualizes repo and license dat
 - **Per-Repo Recommendations** — Color-coded table with Active / Monitor / Revoke License per repo
 - **Drill-Down Detail View** — Click any repo for contributor activity, commit charts, PR list, repo health
 - **Token Health** — Rate limit bar, scope list, expiry countdown
+- **Enterprise License Management** — Org-level Copilot seat tracking with:
+  - Copilot billing summary (total/active/inactive/pending seats)
+  - Per-seat activity table sorted by idle days
+  - License reassignment recommendations (Active / Monitor / Reassign)
+  - Org members list with Copilot seat status indicators
+  - Org slug configuration in settings modal
 
 ### Running the Dashboard Locally
 
@@ -143,16 +184,57 @@ export ANTHROPIC_API_KEY=sk-ant-xxx
 python agent.py --report github_license_report.json
 ```
 
-### Enterprise Dashboard Integration (Future)
+### License Manager Script (Copilot Removal + Entra ID Reassignment)
 
-When org admin credentials are available, the React dashboard can be extended to show:
+Automated script to identify inactive Copilot seats, remove licenses, and reassign via Microsoft Entra ID (Azure AD).
 
-1. **Copilot License Panel** — All Copilot seats with `last_activity_at`, days since last IDE usage, recapture recommendations
-2. **Enterprise Members Panel** — All members with last login from audit log, activity status
-3. **Unified License View** — Merged signals per user showing which signal is most recent
-4. **Bulk Recapture Actions** — Export list of inactive users for license revocation
+```bash
+# Mock mode — see the full flow with sample data (no API calls)
+python license_manager.py --mock
 
-The dashboard currently shows these as "Locked Signals" cards that will activate when an org admin token is provided.
+# Dry run against real GitHub org (reads only, no modifications)
+python license_manager.py --org my-company --dry-run
+
+# Live — remove inactive Copilot seats
+python license_manager.py --org my-company
+
+# With Entra ID integration for license reassignment
+python license_manager.py --org my-company \
+  --tenant-id <tid> --client-id <cid> --client-secret <cs> \
+  --email-domain contoso.com
+
+# Export inactive seats to CSV
+python license_manager.py --org my-company --export inactive_seats.csv
+```
+
+**Modes:**
+- `--mock` — Uses sample data with 20 mock users, no real API calls
+- `--dry-run` — Connects to real APIs but doesn't remove or reassign anything
+- (default) — Live mode, removes seats and reassigns licenses
+
+**Entra ID Integration:**
+- Authenticates via MSAL client credentials flow
+- Matches GitHub logins to Entra ID users by UPN, email, or display name
+- Removes GitHub/Copilot licenses from inactive users in Azure AD
+- Can reassign freed licenses to new users
+- Set `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` env vars or pass via CLI
+
+**To switch from mock to live with your Azure subscription:**
+1. Create an Entra ID app registration with `User.ReadWrite.All` and `Directory.ReadWrite.All` permissions
+2. Generate a client secret
+3. Create a GitHub org admin PAT with `manage_billing:copilot` + `read:org`
+4. Run: `python license_manager.py --org YOUR_ORG --tenant-id TID --client-id CID --client-secret CS`
+
+### Enterprise Dashboard Integration
+
+The React dashboard now includes a full **Enterprise License Management** panel that activates when you enter an org slug in the settings modal. It shows:
+
+1. **Copilot Billing KPIs** — Total seats, active, inactive, pending cancellation
+2. **Copilot Seats Table** — All seats with last activity, editor, idle days, plan type, assignment date, reassignment recommendation
+3. **License Reassignment Summary** — Counts of seats that can be reassigned (60d+), need monitoring (30-60d), and are active
+4. **Org Members View** — All org members with Copilot seat status, admin badges
+
+Requires an org admin token with `manage_billing:copilot` + `read:org` scopes.
 
 ---
 
@@ -180,14 +262,15 @@ The dashboard currently shows these as "Locked Signals" cards that will activate
 ```
 github-license-dashboard/
   README.md                  # This file
+  license_manager.py         # Copilot license removal + Entra ID reassignment
   collector.py               # Full org/enterprise license collector
   agent.py                   # Claude AI recapture plan generator
   token_inspector.py         # PAT validation and diagnostics
   repo_test.py               # Single-repo smoke test
   config.example.yaml        # Config template
-  requirements.txt           # Python dependencies
+  requirements.txt           # Python dependencies (requests, pyyaml, msal)
   dashboard/                 # React dashboard
-    src/App.tsx              # Main dashboard application
+    src/App.tsx              # Main dashboard application (3200+ lines)
     src/App.css              # Styles
     package.json             # Node dependencies
     vite.config.ts           # Build config
