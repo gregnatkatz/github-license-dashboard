@@ -2,23 +2,30 @@
 
 Accurate GitHub license usage tracking for Copilot (Business & Enterprise) and GitHub Enterprise members. Identifies inactive users for license recapture using a **60-day inactivity threshold**.
 
-## Demo Videos
+## Demo
 
-### Multi-Account Dashboard Overview
-Full walkthrough of the dashboard with multi-account support, KPI cards, license recommendations, and drill-down:
+### Enterprise License Management Panel
 
-![Multi-Account Overview](/home/ubuntu/screencasts/rec-3e37a57259964f7ba3a972cb8bc4b99e-edited.mp4)
+The dashboard includes an enterprise-level org panel showing Copilot seat assignments, org members, and license reassignment recommendations:
 
-### User License Status + 60-Day Timer
-Per-user license status cards showing last activity, 60-day countdown timer, and revoke recommendations:
+![Enterprise License Management Panel](/home/ubuntu/screenshots/github_license_010541.png)
 
-![User License Status](/home/ubuntu/screencasts/rec-7b78281e0c464ffebeb4420be1da5af8-edited.mp4)
+**Key features visible:**
+- KPI cards: 41 repos, 18 private, 23 public, 3 active, 2 moderate, 36 revoke recommended
+- User License Status with 60-day countdown timer and last activity dates
+- Enterprise License Management panel showing 4,480 Microsoft org members
+- Copilot billing scope error banner (expected without org admin token — graceful handling)
 
 ### License Manager Script (Mock Mode)
-Python script identifying inactive Copilot seats and simulating Entra ID license reassignment:
+
+The `license_manager.py` script identifies inactive Copilot seats and handles license removal + Entra ID reassignment:
 
 ```
 $ python license_manager.py --mock
+
+  Step 1: Fetch Copilot Seat Assignments
+  Org: mock-enterprise-org (mock)
+  Loaded 20 mock seats
 
   Step 2: Categorize Seats by Activity
   Active   (<30d):  9 seats
@@ -27,12 +34,21 @@ $ python license_manager.py --mock
 
   Step 4: Remove Inactive Copilot Seats
     [MOCK] Removed Copilot seat for: hank-legacy
+    [MOCK] Removed Copilot seat for: ivy-contractor
+    [MOCK] Removed Copilot seat for: jack-intern
     [MOCK] Removed Copilot seat for: kate-manager
-    ...
+    [MOCK] Removed Copilot seat for: leo-departed
+    [MOCK] Removed Copilot seat for: olivia-mobile
+    [MOCK] Removed Copilot seat for: rachel-design
 
   Step 5: Entra ID License Reassignment
     [MOCK] Found Entra user: hank-legacy@contoso.com
-    [MOCK] Would disable GitHub Enterprise license
+    [MOCK] Current licenses: Microsoft 365 E5, GitHub Enterprise
+    [MOCK] Would disable GitHub Enterprise license for hank-legacy@contoso.com
+    ... (7 users total)
+
+  Summary:
+  Total seats: 20 | Active: 9 | Monitor: 4 | Reassign: 7
 ```
 
 ---
