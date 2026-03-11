@@ -37,6 +37,9 @@ import {
   Plus,
   Trash2,
   User,
+  Building2,
+  Unlock,
+  ArrowRightLeft,
 } from "lucide-react";
 import "./App.css";
 
@@ -146,6 +149,36 @@ interface UserLicenseStatus {
   daysSinceLastActivity: number;
   daysUntilRevoke: number; // 60 - daysSinceLastActivity (clamped to 0)
   recommendation: "Active" | "Monitor" | "Revoke License";
+}
+
+interface CopilotSeat {
+  login: string;
+  avatarUrl: string;
+  lastActivityAt: string | null;
+  lastEditor: string | null;
+  createdAt: string;
+  pendingCancellationDate: string | null;
+  planType: string;
+  daysSinceActivity: number;
+  recommendation: "Active" | "Monitor" | "Revoke License" | "Reassign";
+}
+
+interface OrgMember {
+  login: string;
+  avatarUrl: string;
+  role: string;
+  siteAdmin: boolean;
+}
+
+interface OrgLicenseData {
+  orgSlug: string;
+  copilotBilling: {
+    seatBreakdown: { total: number; active: number; inactive: number; added: number; pending: number };
+    planType: string;
+  } | null;
+  copilotSeats: CopilotSeat[];
+  orgMembers: OrgMember[];
+  errors: string[];
 }
 
 /* ─── Palette ────────────────────────────────────────────────────────── */
@@ -459,6 +492,8 @@ function SettingsModal({
   onClose,
   tokenInputs,
   setTokenInputs,
+  orgSlug,
+  setOrgSlug,
   onSubmit,
   loading,
   error,
@@ -468,6 +503,8 @@ function SettingsModal({
   onClose: () => void;
   tokenInputs: string[];
   setTokenInputs: (v: string[]) => void;
+  orgSlug: string;
+  setOrgSlug: (v: string) => void;
   onSubmit: () => void;
   loading: boolean;
   error: string | null;
@@ -665,6 +702,52 @@ function SettingsModal({
           <Plus size={14} />
           Add another account
         </button>
+
+        <div style={{ borderTop: `1px solid ${COLORS.cardBorder}`, paddingTop: 16, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <Building2 size={16} color={COLORS.purple} />
+            <label
+              style={{
+                fontSize: 12,
+                color: COLORS.textSecondary,
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              Organization (Optional)
+            </label>
+          </div>
+          <p
+            style={{
+              fontSize: 11,
+              color: COLORS.textMuted,
+              marginBottom: 8,
+              lineHeight: 1.4,
+            }}
+          >
+            Enter an org slug to pull Copilot seat assignments, org members, and license reassignment data.
+            Requires org admin token with manage_billing:copilot + read:org scopes.
+          </p>
+          <input
+            type="text"
+            placeholder="org-slug (e.g. my-company)"
+            value={orgSlug}
+            onChange={(e) => setOrgSlug(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+            style={{
+              width: "100%",
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: `1px solid ${orgSlug ? "rgba(188,140,255,0.3)" : COLORS.cardBorder}`,
+              backgroundColor: "rgba(255,255,255,0.04)",
+              color: COLORS.textPrimary,
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 13,
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
 
         {error && (
           <div
@@ -1040,7 +1123,111 @@ async function fetchUserPRActivity(token: string, username: string): Promise<{ l
   return { lastPR, lastPRRepo, lastActivity, lastActivityType, lastActivityRepo, avatarUrl };
 }
 
-async function fetchUserEvents(token: string, username: string): Promise<Map<string, { date: string; type: string; repo: string }>> {
+async function fetchCopilotBilling(token: string, org: string): Promise<OrgLicenseData["copilotBilling"]> {
+  try {
+    const resp = await fetch(`${API}/orgs/${org}/copilot/billing`, { headers: hdrs(token) });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return {
+      seatBreakdown: {
+        total: data.seat_breakdown?.total ?? 0,
+        active: data.seat_breakdown?.active_this_cycle ?? 0,
+        inactive: data.seat_breakdown?.inactive_this_cycle ?? 0,
+        added: data.seat_breakdown?.added_this_cycle ?? 0,
+        pending: data.seat_breakdown?.pending_cancellation ?? 0,
+      },
+      planType: data.seat_management_setting || "unknown",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCopilotSeats(token: string, org: string): Promise<CopilotSeat[]> {
+  const seats: CopilotSeat[] = [];
+  const nowMs = Date.now();
+  try {
+    let page = 1;
+    while (true) {
+      const resp = await fetch(
+        `${API}/orgs/${org}/copilot/billing/seats?per_page=100&page=${page}`,
+        { headers: hdrs(token) }
+      );
+      if (!resp.ok) break;
+      const data = await resp.json();
+      const seatList = data.seats || [];
+      if (seatList.length === 0) break;
+      for (const s of seatList) {
+        const lastAct = s.last_activity_at || null;
+        const daysSince = lastAct
+          ? Math.floor((nowMs - new Date(lastAct).getTime()) / 86400000)
+          : 999;
+        const rec: CopilotSeat["recommendation"] =
+          daysSince < 30 ? "Active" : daysSince < 60 ? "Monitor" : "Reassign";
+        seats.push({
+          login: s.assignee?.login || "unknown",
+          avatarUrl: s.assignee?.avatar_url || "",
+          lastActivityAt: lastAct,
+          lastEditor: s.last_activity_editor || null,
+          createdAt: s.created_at || "",
+          pendingCancellationDate: s.pending_cancellation_date || null,
+          planType: s.plan_type || "unknown",
+          daysSinceActivity: daysSince,
+          recommendation: rec,
+        });
+      }
+      if (seatList.length < 100) break;
+      page++;
+    }
+  } catch {
+    // graceful — org may not have Copilot
+  }
+  return seats;
+}
+
+async function fetchOrgMembers(token: string, org: string): Promise<OrgMember[]> {
+  const members: OrgMember[] = [];
+  try {
+    let page = 1;
+    while (true) {
+      const resp = await fetch(
+        `${API}/orgs/${org}/members?per_page=100&page=${page}`,
+        { headers: hdrs(token) }
+      );
+      if (!resp.ok) break;
+      const data = await resp.json();
+      if (data.length === 0) break;
+      for (const m of data) {
+        members.push({
+          login: m.login || "unknown",
+          avatarUrl: m.avatar_url || "",
+          role: m.role || "member",
+          siteAdmin: m.site_admin || false,
+        });
+      }
+      if (data.length < 100) break;
+      page++;
+    }
+  } catch {
+    // graceful — token may not have read:org
+  }
+  return members;
+}
+
+async function fetchOrgLicenseData(token: string, org: string): Promise<OrgLicenseData> {
+  const errors: string[] = [];
+  const [billing, seats, members] = await Promise.all([
+    fetchCopilotBilling(token, org),
+    fetchCopilotSeats(token, org),
+    fetchOrgMembers(token, org),
+  ]);
+  if (!billing) errors.push("Copilot billing API unavailable — requires manage_billing:copilot scope and org owner/billing manager role");
+  if (seats.length === 0 && billing) errors.push("No Copilot seats found — org may not have Copilot enabled");
+  if (members.length === 0) errors.push("Org members API unavailable — requires read:org scope");
+  return { orgSlug: org, copilotBilling: billing, copilotSeats: seats, orgMembers: members, errors };
+}
+
+function fetchUserEvents(token: string, username: string): Promise<Map<string, { date: string; type: string; repo: string }>> {
   const activityMap = new Map<string, { date: string; type: string; repo: string }>();
   for (let page = 1; page <= 3; page++) {
     const resp = await fetch(
@@ -1089,6 +1276,8 @@ function App() {
   const [allRepos, setAllRepos] = useState<UserRepo[]>([]);
   const [userEventsMap, setUserEventsMap] = useState<Map<string, { date: string; type: string; repo: string }>>(new Map());
   const [userLicenseStatuses, setUserLicenseStatuses] = useState<UserLicenseStatus[]>([]);
+  const [orgSlug, setOrgSlug] = useState("");
+  const [orgLicenseData, setOrgLicenseData] = useState<OrgLicenseData | null>(null);
 
   // Helper: get the token for a given repo owner
   const getTokenForOwner = useCallback((owner: string): string => {
@@ -1227,6 +1416,16 @@ function App() {
       setAllRepos(mergedRepos);
       setUserEventsMap(mergedEvents);
       setUserLicenseStatuses(userStatuses);
+
+      // Fetch org-level license data if org slug provided
+      if (orgSlug.trim()) {
+        const orgToken = validPairs[0].token;
+        const orgData = await fetchOrgLicenseData(orgToken, orgSlug.trim());
+        setOrgLicenseData(orgData);
+      } else {
+        setOrgLicenseData(null);
+      }
+
       setLastRefresh(new Date());
       setSettingsOpen(false);
       setViewMode("overview");
@@ -1235,7 +1434,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [tokenInputs]);
+  }, [tokenInputs, orgSlug]);
 
   const loadRepoDetail = useCallback(async (slug: string) => {
     const owner = slug.split("/")[0];
@@ -1334,6 +1533,8 @@ function App() {
         onClose={() => { if (allRepos.length > 0 || repoData) setSettingsOpen(false); }}
         tokenInputs={tokenInputs}
         setTokenInputs={setTokenInputs}
+        orgSlug={orgSlug}
+        setOrgSlug={setOrgSlug}
         onSubmit={loadData}
         loading={loading}
         error={error}
@@ -1734,6 +1935,283 @@ function App() {
                     );
                   })}
                 </div>
+              </GlassCard>
+            </>
+          )}
+
+          {/* Enterprise License Management Panel */}
+          {orgLicenseData && (
+            <>
+              <div style={{ height: 16 }} />
+              <GlassCard delay={80}>
+                <SectionHeader
+                  icon={<Building2 size={18} color={COLORS.purple} />}
+                  title={`Enterprise License Management — ${orgLicenseData.orgSlug}`}
+                />
+
+                {/* Org errors / warnings */}
+                {orgLicenseData.errors.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    {orgLicenseData.errors.map((err, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "8px 12px",
+                          borderRadius: 8,
+                          backgroundColor: "rgba(248,81,73,0.08)",
+                          border: "1px solid rgba(248,81,73,0.2)",
+                          marginBottom: 6,
+                          fontSize: 12,
+                          color: COLORS.yellow,
+                        }}
+                      >
+                        <AlertCircle size={14} />
+                        {err}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Copilot Billing Summary KPIs */}
+                {orgLicenseData.copilotBilling && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                      gap: 12,
+                      marginBottom: 20,
+                    }}
+                  >
+                    <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Total Seats</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.blue }}>{orgLicenseData.copilotBilling.seatBreakdown.total}</div>
+                    </div>
+                    <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Active</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.green }}>{orgLicenseData.copilotBilling.seatBreakdown.active}</div>
+                    </div>
+                    <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Inactive</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.red }}>{orgLicenseData.copilotBilling.seatBreakdown.inactive}</div>
+                    </div>
+                    <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Pending Cancel</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.yellow }}>{orgLicenseData.copilotBilling.seatBreakdown.pending}</div>
+                    </div>
+                    <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Plan Type</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.purple, marginTop: 4 }}>{orgLicenseData.copilotBilling.planType}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* License Reassignment Breakdown */}
+                {orgLicenseData.copilotSeats.length > 0 && (() => {
+                  const canReassign = orgLicenseData.copilotSeats.filter((s) => s.recommendation === "Reassign").length;
+                  const monitorSeats = orgLicenseData.copilotSeats.filter((s) => s.recommendation === "Monitor").length;
+                  const activeSeats = orgLicenseData.copilotSeats.filter((s) => s.recommendation === "Active").length;
+                  return (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "12px 16px",
+                        borderRadius: 10,
+                        background: canReassign > 0 ? "rgba(248,81,73,0.06)" : "rgba(63,185,80,0.06)",
+                        border: `1px solid ${canReassign > 0 ? "rgba(248,81,73,0.2)" : "rgba(63,185,80,0.2)"}`,
+                        marginBottom: 20,
+                      }}
+                    >
+                      <ArrowRightLeft size={20} color={canReassign > 0 ? COLORS.red : COLORS.green} />
+                      <div>
+                        <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 14, color: COLORS.textPrimary, marginBottom: 4 }}>
+                          License Reassignment Summary
+                        </div>
+                        <div style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+                          <span style={{ color: COLORS.red, fontWeight: 600 }}>{canReassign} seats</span> can be reassigned (60d+ inactive).{" "}
+                          <span style={{ color: COLORS.yellow, fontWeight: 600 }}>{monitorSeats} seats</span> need monitoring (30-60d).{" "}
+                          <span style={{ color: COLORS.green, fontWeight: 600 }}>{activeSeats} seats</span> actively used.
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Copilot Seats Table */}
+                {orgLicenseData.copilotSeats.length > 0 && (
+                  <>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                      <Unlock size={16} color={COLORS.blue} />
+                      <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 14, color: COLORS.textPrimary }}>
+                        Copilot Seat Assignments ({orgLicenseData.copilotSeats.length})
+                      </span>
+                    </div>
+                    <div style={{ maxHeight: 400, overflowY: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                            {["User", "Last Activity", "Editor", "Days Idle", "Plan", "Assigned", "Recommendation"].map((h) => (
+                              <th
+                                key={h}
+                                style={{
+                                  textAlign: h === "User" ? "left" : "center",
+                                  padding: "8px 6px",
+                                  color: COLORS.textMuted,
+                                  fontWeight: 500,
+                                  fontSize: 10,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
+                                  whiteSpace: "nowrap",
+                                  position: "sticky",
+                                  top: 0,
+                                  backgroundColor: COLORS.surface,
+                                }}
+                              >
+                                {h}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {orgLicenseData.copilotSeats
+                            .sort((a, b) => b.daysSinceActivity - a.daysSinceActivity)
+                            .map((seat) => {
+                              const recColor = seat.recommendation === "Active" ? COLORS.green : seat.recommendation === "Monitor" ? COLORS.yellow : COLORS.red;
+                              return (
+                                <tr
+                                  key={seat.login}
+                                  style={{
+                                    borderBottom: "1px solid rgba(255,255,255,0.03)",
+                                    backgroundColor: seat.recommendation === "Reassign" ? "rgba(248,81,73,0.04)" : seat.recommendation === "Monitor" ? "rgba(210,153,34,0.04)" : "transparent",
+                                  }}
+                                >
+                                  <td style={{ padding: "8px 6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      {seat.avatarUrl && (
+                                        <img src={seat.avatarUrl} alt="" style={{ width: 22, height: 22, borderRadius: "50%" }} />
+                                      )}
+                                      <a
+                                        href={`https://github.com/${seat.login}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{ color: COLORS.blue, textDecoration: "none" }}
+                                      >
+                                        {seat.login}
+                                      </a>
+                                    </div>
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textSecondary }}>
+                                    {seat.lastActivityAt ? new Date(seat.lastActivityAt).toLocaleDateString() : "Never"}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textMuted, fontSize: 11 }}>
+                                    {seat.lastEditor || "—"}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: 600, color: recColor }}>
+                                    {seat.daysSinceActivity >= 999 ? "∞" : `${seat.daysSinceActivity}d`}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textMuted, fontSize: 11 }}>
+                                    {seat.planType}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textSecondary }}>
+                                    {seat.createdAt ? new Date(seat.createdAt).toLocaleDateString() : "—"}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 4,
+                                        padding: "3px 10px",
+                                        borderRadius: 9999,
+                                        fontSize: 10,
+                                        fontWeight: 600,
+                                        backgroundColor: `${recColor}18`,
+                                        color: recColor,
+                                        border: `1px solid ${recColor}44`,
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      {seat.recommendation === "Active" && <UserCheck size={11} />}
+                                      {seat.recommendation === "Monitor" && <Clock size={11} />}
+                                      {seat.recommendation === "Reassign" && <ArrowRightLeft size={11} />}
+                                      {seat.recommendation === "Reassign" ? "Reassign License" : seat.recommendation}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+
+                {/* Org Members Summary */}
+                {orgLicenseData.orgMembers.length > 0 && (
+                  <div style={{ marginTop: 20 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                      <Users size={16} color={COLORS.green} />
+                      <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 14, color: COLORS.textPrimary }}>
+                        Org Members ({orgLicenseData.orgMembers.length})
+                      </span>
+                      {orgLicenseData.copilotSeats.length > 0 && (
+                        <span style={{ fontSize: 11, color: COLORS.textMuted }}>
+                          — {orgLicenseData.orgMembers.length - orgLicenseData.copilotSeats.length} without Copilot seats
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {orgLicenseData.orgMembers.slice(0, 50).map((m) => {
+                        const hasSeat = orgLicenseData.copilotSeats.some((s) => s.login === m.login);
+                        return (
+                          <div
+                            key={m.login}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "4px 10px",
+                              borderRadius: 8,
+                              backgroundColor: hasSeat ? "rgba(88,166,255,0.08)" : "rgba(255,255,255,0.03)",
+                              border: `1px solid ${hasSeat ? "rgba(88,166,255,0.2)" : COLORS.cardBorder}`,
+                              fontSize: 11,
+                            }}
+                          >
+                            {m.avatarUrl && <img src={m.avatarUrl} alt="" style={{ width: 18, height: 18, borderRadius: "50%" }} />}
+                            <span style={{ color: COLORS.textPrimary }}>{m.login}</span>
+                            {m.role === "admin" && (
+                              <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, backgroundColor: "rgba(188,140,255,0.15)", color: COLORS.purple }}>admin</span>
+                            )}
+                            {hasSeat && (
+                              <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, backgroundColor: "rgba(88,166,255,0.15)", color: COLORS.blue }}>copilot</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {orgLicenseData.orgMembers.length > 50 && (
+                        <div style={{ display: "flex", alignItems: "center", padding: "4px 10px", fontSize: 11, color: COLORS.textMuted }}>
+                          +{orgLicenseData.orgMembers.length - 50} more
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* No data placeholder */}
+                {orgLicenseData.copilotSeats.length === 0 && orgLicenseData.orgMembers.length === 0 && (
+                  <div style={{ textAlign: "center", padding: "32px 0", color: COLORS.textMuted, fontSize: 13 }}>
+                    <Building2 size={32} color={COLORS.textMuted} style={{ marginBottom: 12, opacity: 0.5 }} />
+                    <div>No org data available for <strong style={{ color: COLORS.textSecondary }}>{orgLicenseData.orgSlug}</strong>.</div>
+                    <div style={{ fontSize: 11, marginTop: 6, maxWidth: 400, margin: "6px auto 0" }}>
+                      Ensure your token has <code style={{ color: COLORS.purple }}>manage_billing:copilot</code> and <code style={{ color: COLORS.purple }}>read:org</code> scopes,
+                      and that you are an org owner or billing manager.
+                    </div>
+                  </div>
+                )}
               </GlassCard>
             </>
           )}
