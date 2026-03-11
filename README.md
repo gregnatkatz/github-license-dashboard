@@ -4,27 +4,23 @@ Accurate GitHub license usage tracking for Copilot (Business & Enterprise) and G
 
 ## Demo
 
-### Enterprise License Management Panel
+### Dashboard Overview — KPIs, User License Status, Enterprise Panel
 
-The dashboard includes an enterprise-level org panel showing Copilot seat assignments, org members, and license reassignment recommendations:
+![Dashboard Overview](docs/images/dashboard-overview.png)
 
-![Enterprise License Management Panel](docs/images/enterprise-panel.png)
+**What you see:**
+- **KPI cards:** 41 repos, 18 private, 23 public, 3 active, 2 moderate, 36 revoke recommended
+- **User License Status** for gregnatkatz — 60-day countdown timer, last push/PR/activity dates, repo breakdown (3 active / 2 monitor / 36 revoke)
+- **Enterprise License Management — microsoft** — Copilot billing scope error banner (expected without org admin token), 4,479 org members loaded with avatars
 
-**Key features visible:**
-- KPI cards: 41 repos, 18 private, 23 public, 3 active, 2 moderate, 36 revoke recommended
-- User License Status with 60-day countdown timer and last activity dates
-- Enterprise License Management panel showing 4,480 Microsoft org members
-- Copilot billing scope error banner (expected without org admin token — graceful handling)
+### Repos Table — Color-Coded License Recommendations
 
-### Video Walkthroughs
+![Repos Table](docs/images/repos-table.png)
 
-**Enterprise Dashboard Testing** — Org slug entry, enterprise panel, org members, repos table:
-
-https://github.com/gregnatkatz/github-license-dashboard/raw/devin/1773157222-github-license-dashboard/docs/images/enterprise-testing.mp4
-
-**User License Status + 60-Day Timer** — Per-user license cards, last activity dates, revoke recommendations:
-
-https://github.com/gregnatkatz/github-license-dashboard/raw/devin/1773157222-github-license-dashboard/docs/images/user-license-status.mp4
+**What you see:**
+- All 41 repos sorted by last push date with idle days
+- Color-coded recommendations: green **Active** (<30d), yellow **Monitor** (30-60d), red **Revoke License** (60d+)
+- Language tags, stars, forks, issues per repo
 
 ### License Manager Script (Mock Mode)
 
