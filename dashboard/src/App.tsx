@@ -40,6 +40,10 @@ import {
   Building2,
   Unlock,
   ArrowRightLeft,
+  CheckCircle,
+  Play,
+  XCircle,
+  RotateCcw,
 } from "lucide-react";
 import "./App.css";
 
@@ -1279,6 +1283,12 @@ function App() {
   const [orgSlug, setOrgSlug] = useState("");
   const [orgLicenseData, setOrgLicenseData] = useState<OrgLicenseData | null>(null);
 
+  // Revocation panel state
+  const [revocationLog, setRevocationLog] = useState<string[]>([]);
+  const [revocationRunning, setRevocationRunning] = useState(false);
+  const [revokedUsers, setRevokedUsers] = useState<Set<string>>(new Set());
+  const [revocationComplete, setRevocationComplete] = useState(false);
+
   // Helper: get the token for a given repo owner
   const getTokenForOwner = useCallback((owner: string): string => {
     return ownerTokenMap.get(owner) || resolvedTokens[0]?.token || tokenInputs[0] || "";
@@ -2212,6 +2222,381 @@ function App() {
                     </div>
                   </div>
                 )}
+              </GlassCard>
+            </>
+          )}
+
+          {/* License Revocation Panel */}
+          {viewMode === "overview" && (userLicenseStatuses.some((u) => u.recommendation === "Revoke License") || (orgLicenseData && orgLicenseData.copilotSeats.some((s) => s.recommendation === "Reassign"))) && (
+            <>
+              <div style={{ height: 16 }} />
+              <GlassCard delay={90}>
+                <SectionHeader
+                  icon={<XCircle size={18} color={COLORS.red} />}
+                  title="License Revocation & Reassignment"
+                />
+
+                {/* Summary */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "12px 16px",
+                    borderRadius: 10,
+                    background: "rgba(248,81,73,0.06)",
+                    border: "1px solid rgba(248,81,73,0.2)",
+                    marginBottom: 20,
+                  }}
+                >
+                  <AlertCircle size={20} color={COLORS.red} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 14, color: COLORS.textPrimary, marginBottom: 4 }}>
+                      {revocationComplete ? "Revocation Complete" : "Inactive Licenses Ready for Revocation"}
+                    </div>
+                    <div style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+                      {revocationComplete
+                        ? `Successfully revoked ${revokedUsers.size} license(s) and initiated Entra ID reassignment.`
+                        : `${userLicenseStatuses.filter((u) => u.recommendation === "Revoke License").length + (orgLicenseData?.copilotSeats.filter((s) => s.recommendation === "Reassign").length || 0)} user(s) inactive 60+ days — ready for license revocation and Entra ID reassignment.`
+                      }
+                    </div>
+                  </div>
+                  {!revocationRunning && !revocationComplete && (
+                    <button
+                      onClick={() => {
+                        // Mock bulk revocation
+                        setRevocationRunning(true);
+                        setRevocationLog([]);
+                        const targets: { login: string; source: string; days: number }[] = [];
+                        userLicenseStatuses.filter((u) => u.recommendation === "Revoke License").forEach((u) => {
+                          targets.push({ login: u.username, source: "repo-activity", days: u.daysSinceLastActivity });
+                        });
+                        if (orgLicenseData) {
+                          orgLicenseData.copilotSeats.filter((s) => s.recommendation === "Reassign").forEach((s) => {
+                            if (!targets.find((t) => t.login === s.login)) {
+                              targets.push({ login: s.login, source: "copilot-seat", days: s.daysSinceActivity });
+                            }
+                          });
+                        }
+                        const logs: string[] = [];
+                        const revoked = new Set<string>();
+                        let idx = 0;
+                        logs.push(`[MOCK] License Revocation Script — ${new Date().toISOString()}`);
+                        logs.push(`[MOCK] Found ${targets.length} inactive user(s) exceeding 60-day threshold`);
+                        logs.push("");
+                        setRevocationLog([...logs]);
+                        const step = () => {
+                          if (idx >= targets.length) {
+                            logs.push("");
+                            logs.push(`═══════════════════════════════════════`);
+                            logs.push(`[MOCK] SUMMARY`);
+                            logs.push(`  Licenses revoked: ${targets.length}`);
+                            logs.push(`  Entra ID reassignments initiated: ${targets.length}`);
+                            logs.push(`  Licenses freed for reassignment: ${targets.length}`);
+                            logs.push(`═══════════════════════════════════════`);
+                            setRevocationLog([...logs]);
+                            setRevocationRunning(false);
+                            setRevocationComplete(true);
+                            return;
+                          }
+                          const t = targets[idx];
+                          logs.push(`── User ${idx + 1}/${targets.length}: ${t.login} ──`);
+                          logs.push(`  Source: ${t.source === "copilot-seat" ? "Copilot Seat" : "Repo Activity"} | Idle: ${t.days}d`);
+                          setRevocationLog([...logs]);
+                          setTimeout(() => {
+                            logs.push(`  [MOCK] DELETE /orgs/{org}/copilot/billing/selected_users — removing ${t.login}`);
+                            logs.push(`  [MOCK] ✓ Copilot license removed`);
+                            setRevocationLog([...logs]);
+                            setTimeout(() => {
+                              logs.push(`  [MOCK] Entra ID: Looking up ${t.login}@contoso.com`);
+                              logs.push(`  [MOCK] PATCH /users/${t.login} — removing GitHub Enterprise license`);
+                              logs.push(`  [MOCK] ✓ Entra ID license reassigned`);
+                              logs.push("");
+                              revoked.add(t.login);
+                              setRevokedUsers(new Set(revoked));
+                              setRevocationLog([...logs]);
+                              idx++;
+                              setTimeout(step, 400);
+                            }, 500);
+                          }, 500);
+                        };
+                        setTimeout(step, 600);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "10px 20px",
+                        borderRadius: 10,
+                        border: "none",
+                        backgroundColor: COLORS.red,
+                        color: "#fff",
+                        fontFamily: "'Syne', sans-serif",
+                        fontWeight: 600,
+                        fontSize: 13,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Play size={14} /> Revoke All Inactive
+                    </button>
+                  )}
+                  {revocationComplete && (
+                    <button
+                      onClick={() => {
+                        setRevocationLog([]);
+                        setRevokedUsers(new Set());
+                        setRevocationComplete(false);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 16px",
+                        borderRadius: 10,
+                        border: `1px solid ${COLORS.cardBorder}`,
+                        backgroundColor: "transparent",
+                        color: COLORS.textSecondary,
+                        fontFamily: "'Syne', sans-serif",
+                        fontWeight: 600,
+                        fontSize: 12,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <RotateCcw size={12} /> Reset
+                    </button>
+                  )}
+                </div>
+
+                {/* Revocation Targets Table */}
+                <div style={{ marginBottom: revocationLog.length > 0 ? 16 : 0 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        {["User", "Source", "Days Idle", "Last Activity", "Status", "Action"].map((h) => (
+                          <th
+                            key={h}
+                            style={{
+                              textAlign: h === "User" ? "left" : "center",
+                              padding: "8px 6px",
+                              color: COLORS.textMuted,
+                              fontWeight: 500,
+                              fontSize: 10,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Individual account users flagged for revocation */}
+                      {userLicenseStatuses.filter((u) => u.recommendation === "Revoke License").map((u) => {
+                        const isRevoked = revokedUsers.has(u.username);
+                        return (
+                          <tr
+                            key={`user-${u.username}`}
+                            style={{
+                              borderBottom: "1px solid rgba(255,255,255,0.03)",
+                              backgroundColor: isRevoked ? "rgba(63,185,80,0.04)" : "rgba(248,81,73,0.04)",
+                            }}
+                          >
+                            <td style={{ padding: "8px 6px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                {u.avatarUrl && <img src={u.avatarUrl} alt="" style={{ width: 22, height: 22, borderRadius: "50%" }} />}
+                                <a href={`https://github.com/${u.username}`} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.blue, textDecoration: "none" }}>
+                                  {u.username}
+                                </a>
+                              </div>
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textMuted, fontSize: 11 }}>Repo Activity</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: 600, color: COLORS.red }}>{u.daysSinceLastActivity}d</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textSecondary, fontSize: 11 }}>
+                              {u.lastActivity ? new Date(u.lastActivity).toLocaleDateString() : "—"}
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 9999, fontSize: 10, fontWeight: 600,
+                                backgroundColor: isRevoked ? "rgba(63,185,80,0.15)" : "rgba(248,81,73,0.15)",
+                                color: isRevoked ? COLORS.green : COLORS.red,
+                                border: `1px solid ${isRevoked ? COLORS.green : COLORS.red}44`,
+                              }}>
+                                {isRevoked ? <><CheckCircle size={10} /> Revoked</> : <><XCircle size={10} /> Pending</>}
+                              </span>
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                              {!isRevoked && !revocationRunning && (
+                                <button
+                                  onClick={() => {
+                                    // Single user mock revocation
+                                    setRevocationRunning(true);
+                                    const logs = [...revocationLog];
+                                    logs.push(`── Revoking: ${u.username} ──`);
+                                    logs.push(`  Source: Repo Activity | Idle: ${u.daysSinceLastActivity}d`);
+                                    setRevocationLog([...logs]);
+                                    setTimeout(() => {
+                                      logs.push(`  [MOCK] DELETE /orgs/{org}/copilot/billing/selected_users — removing ${u.username}`);
+                                      logs.push(`  [MOCK] ✓ Copilot license removed`);
+                                      setRevocationLog([...logs]);
+                                      setTimeout(() => {
+                                        logs.push(`  [MOCK] Entra ID: Looking up ${u.username}@contoso.com`);
+                                        logs.push(`  [MOCK] PATCH /users/${u.username} — removing GitHub Enterprise license`);
+                                        logs.push(`  [MOCK] ✓ Entra ID license reassigned`);
+                                        logs.push("");
+                                        setRevokedUsers((prev) => new Set([...prev, u.username]));
+                                        setRevocationLog([...logs]);
+                                        setRevocationRunning(false);
+                                      }, 500);
+                                    }, 500);
+                                  }}
+                                  style={{
+                                    padding: "4px 12px",
+                                    borderRadius: 8,
+                                    border: `1px solid ${COLORS.red}44`,
+                                    backgroundColor: "rgba(248,81,73,0.1)",
+                                    color: COLORS.red,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Revoke
+                                </button>
+                              )}
+                              {isRevoked && <CheckCircle size={14} color={COLORS.green} />}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Org copilot seats flagged for reassignment */}
+                      {orgLicenseData && orgLicenseData.copilotSeats.filter((s) => s.recommendation === "Reassign").map((s) => {
+                        const isRevoked = revokedUsers.has(s.login);
+                        return (
+                          <tr
+                            key={`seat-${s.login}`}
+                            style={{
+                              borderBottom: "1px solid rgba(255,255,255,0.03)",
+                              backgroundColor: isRevoked ? "rgba(63,185,80,0.04)" : "rgba(248,81,73,0.04)",
+                            }}
+                          >
+                            <td style={{ padding: "8px 6px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                {s.avatarUrl && <img src={s.avatarUrl} alt="" style={{ width: 22, height: 22, borderRadius: "50%" }} />}
+                                <a href={`https://github.com/${s.login}`} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.blue, textDecoration: "none" }}>
+                                  {s.login}
+                                </a>
+                              </div>
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.purple, fontSize: 11 }}>Copilot Seat</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: 600, color: COLORS.red }}>{s.daysSinceActivity >= 999 ? "∞" : `${s.daysSinceActivity}d`}</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textSecondary, fontSize: 11 }}>
+                              {s.lastActivityAt ? new Date(s.lastActivityAt).toLocaleDateString() : "Never"}
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 9999, fontSize: 10, fontWeight: 600,
+                                backgroundColor: isRevoked ? "rgba(63,185,80,0.15)" : "rgba(248,81,73,0.15)",
+                                color: isRevoked ? COLORS.green : COLORS.red,
+                                border: `1px solid ${isRevoked ? COLORS.green : COLORS.red}44`,
+                              }}>
+                                {isRevoked ? <><CheckCircle size={10} /> Revoked</> : <><XCircle size={10} /> Pending</>}
+                              </span>
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                              {!isRevoked && !revocationRunning && (
+                                <button
+                                  onClick={() => {
+                                    setRevocationRunning(true);
+                                    const logs = [...revocationLog];
+                                    logs.push(`── Revoking: ${s.login} ──`);
+                                    logs.push(`  Source: Copilot Seat | Idle: ${s.daysSinceActivity}d`);
+                                    setRevocationLog([...logs]);
+                                    setTimeout(() => {
+                                      logs.push(`  [MOCK] DELETE /orgs/{org}/copilot/billing/selected_users — removing ${s.login}`);
+                                      logs.push(`  [MOCK] ✓ Copilot license removed`);
+                                      setRevocationLog([...logs]);
+                                      setTimeout(() => {
+                                        logs.push(`  [MOCK] Entra ID: Looking up ${s.login}@contoso.com`);
+                                        logs.push(`  [MOCK] PATCH /users/${s.login} — removing GitHub Enterprise license`);
+                                        logs.push(`  [MOCK] ✓ Entra ID license reassigned`);
+                                        logs.push("");
+                                        setRevokedUsers((prev) => new Set([...prev, s.login]));
+                                        setRevocationLog([...logs]);
+                                        setRevocationRunning(false);
+                                      }, 500);
+                                    }, 500);
+                                  }}
+                                  style={{
+                                    padding: "4px 12px",
+                                    borderRadius: 8,
+                                    border: `1px solid ${COLORS.red}44`,
+                                    backgroundColor: "rgba(248,81,73,0.1)",
+                                    color: COLORS.red,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Revoke
+                                </button>
+                              )}
+                              {isRevoked && <CheckCircle size={14} color={COLORS.green} />}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Execution Log */}
+                {revocationLog.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <FileText size={14} color={COLORS.textMuted} />
+                      <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 12, color: COLORS.textSecondary }}>Execution Log</span>
+                      {revocationRunning && <Loader2 size={12} color={COLORS.blue} className="spin" />}
+                    </div>
+                    <div
+                      style={{
+                        backgroundColor: "rgba(0,0,0,0.3)",
+                        borderRadius: 8,
+                        padding: "12px 16px",
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 11,
+                        lineHeight: 1.7,
+                        color: COLORS.green,
+                        maxHeight: 300,
+                        overflowY: "auto",
+                        border: `1px solid ${COLORS.cardBorder}`,
+                      }}
+                    >
+                      {revocationLog.map((line, i) => (
+                        <div key={i} style={{
+                          color: line.includes("✓") ? COLORS.green
+                            : line.includes("MOCK") ? COLORS.yellow
+                            : line.includes("══") ? COLORS.blue
+                            : line.includes("──") ? COLORS.textPrimary
+                            : COLORS.textSecondary,
+                        }}>
+                          {line || "\u00A0"}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Mode indicator */}
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: COLORS.textMuted }}>
+                  <Shield size={12} />
+                  <span><strong style={{ color: COLORS.yellow }}>Mock Mode</strong> — No actual API calls are made. Connect org admin token + Entra ID credentials to execute live revocations.</span>
+                </div>
               </GlassCard>
             </>
           )}
