@@ -1227,7 +1227,7 @@ async function fetchOrgLicenseData(token: string, org: string): Promise<OrgLicen
   return { orgSlug: org, copilotBilling: billing, copilotSeats: seats, orgMembers: members, errors };
 }
 
-function fetchUserEvents(token: string, username: string): Promise<Map<string, { date: string; type: string; repo: string }>> {
+async function fetchUserEvents(token: string, username: string): Promise<Map<string, { date: string; type: string; repo: string }>> {
   const activityMap = new Map<string, { date: string; type: string; repo: string }>();
   for (let page = 1; page <= 3; page++) {
     const resp = await fetch(
