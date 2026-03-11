@@ -2227,7 +2227,7 @@ function App() {
           )}
 
           {/* License Revocation Panel */}
-          {viewMode === "overview" && (userLicenseStatuses.some((u) => u.recommendation === "Revoke License") || (orgLicenseData && orgLicenseData.copilotSeats.some((s) => s.recommendation === "Reassign"))) && (
+          {viewMode === "overview" && (userLicenseStatuses.some((u) => u.recommendation === "Revoke License") || allRepos.some((r) => Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000) >= 60) || (orgLicenseData && orgLicenseData.copilotSeats.some((s) => s.recommendation === "Reassign"))) && (
             <>
               <div style={{ height: 16 }} />
               <GlassCard delay={90}>
@@ -2255,10 +2255,17 @@ function App() {
                       {revocationComplete ? "Revocation Complete" : "Inactive Licenses Ready for Revocation"}
                     </div>
                     <div style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-                      {revocationComplete
-                        ? `Successfully revoked ${revokedUsers.size} license(s) and initiated Entra ID reassignment.`
-                        : `${userLicenseStatuses.filter((u) => u.recommendation === "Revoke License").length + (orgLicenseData?.copilotSeats.filter((s) => s.recommendation === "Reassign").length || 0)} user(s) inactive 60+ days — ready for license revocation and Entra ID reassignment.`
-                      }
+                      {(() => {
+                        const userCount = userLicenseStatuses.filter((u) => u.recommendation === "Revoke License").length;
+                        const seatCount = orgLicenseData?.copilotSeats.filter((s) => s.recommendation === "Reassign").length || 0;
+                        const repoCount = allRepos.filter((r) => Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000) >= 60).length;
+                        if (revocationComplete) return `Successfully revoked ${revokedUsers.size} license(s) and initiated Entra ID reassignment.`;
+                        const parts: string[] = [];
+                        if (userCount > 0) parts.push(`${userCount} user(s)`);
+                        if (seatCount > 0) parts.push(`${seatCount} Copilot seat(s)`);
+                        if (repoCount > 0) parts.push(`${repoCount} repo(s)`);
+                        return `${parts.join(", ")} inactive 60+ days — ready for license revocation and Entra ID reassignment.`;
+                      })()}
                     </div>
                   </div>
                   {!revocationRunning && !revocationComplete && (
@@ -2267,9 +2274,17 @@ function App() {
                         // Mock bulk revocation
                         setRevocationRunning(true);
                         setRevocationLog([]);
-                        const targets: { login: string; source: string; days: number }[] = [];
+                        const targets: { login: string; source: string; days: number; repo?: string }[] = [];
                         userLicenseStatuses.filter((u) => u.recommendation === "Revoke License").forEach((u) => {
                           targets.push({ login: u.username, source: "repo-activity", days: u.daysSinceLastActivity });
+                        });
+                        // Add inactive repos as revocation targets
+                        allRepos.filter((r) => Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000) >= 60).forEach((r) => {
+                          const owner = r._owner || r.full_name.split("/")[0];
+                          const idle = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+                          if (!targets.find((t) => t.login === r.full_name)) {
+                            targets.push({ login: owner, source: "repo-inactive", days: idle, repo: r.name });
+                          }
                         });
                         if (orgLicenseData) {
                           orgLicenseData.copilotSeats.filter((s) => s.recommendation === "Reassign").forEach((s) => {
@@ -2300,8 +2315,8 @@ function App() {
                             return;
                           }
                           const t = targets[idx];
-                          logs.push(`── User ${idx + 1}/${targets.length}: ${t.login} ──`);
-                          logs.push(`  Source: ${t.source === "copilot-seat" ? "Copilot Seat" : "Repo Activity"} | Idle: ${t.days}d`);
+                          logs.push(`── ${idx + 1}/${targets.length}: ${t.repo ? `${t.login}/${t.repo}` : t.login} ──`);
+                          logs.push(`  Source: ${t.source === "copilot-seat" ? "Copilot Seat" : t.source === "repo-inactive" ? `Repo Inactive (${t.repo})` : "Repo Activity"} | Idle: ${t.days}d`);
                           setRevocationLog([...logs]);
                           setTimeout(() => {
                             logs.push(`  [MOCK] DELETE /orgs/{org}/copilot/billing/selected_users — removing ${t.login}`);
@@ -2312,7 +2327,8 @@ function App() {
                               logs.push(`  [MOCK] PATCH /users/${t.login} — removing GitHub Enterprise license`);
                               logs.push(`  [MOCK] ✓ Entra ID license reassigned`);
                               logs.push("");
-                              revoked.add(t.login);
+                              const revokeKey = t.source === "repo-inactive" && t.repo ? `repo-${t.login}/${t.repo}` : t.login;
+                              revoked.add(revokeKey);
                               setRevokedUsers(new Set(revoked));
                               setRevocationLog([...logs]);
                               idx++;
@@ -2450,6 +2466,85 @@ function App() {
                                         logs.push(`  [MOCK] ✓ Entra ID license reassigned`);
                                         logs.push("");
                                         setRevokedUsers((prev) => new Set([...prev, u.username]));
+                                        setRevocationLog([...logs]);
+                                        setRevocationRunning(false);
+                                      }, 500);
+                                    }, 500);
+                                  }}
+                                  style={{
+                                    padding: "4px 12px",
+                                    borderRadius: 8,
+                                    border: `1px solid ${COLORS.red}44`,
+                                    backgroundColor: "rgba(248,81,73,0.1)",
+                                    color: COLORS.red,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Revoke
+                                </button>
+                              )}
+                              {isRevoked && <CheckCircle size={14} color={COLORS.green} />}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Inactive repos flagged for license revocation */}
+                      {allRepos.filter((r) => Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000) >= 60).map((r) => {
+                        const idle = Math.floor((now.getTime() - new Date(r.pushed_at).getTime()) / 86400000);
+                        const key = `repo-${r.full_name}`;
+                        const isRevoked = revokedUsers.has(key);
+                        return (
+                          <tr
+                            key={key}
+                            style={{
+                              borderBottom: "1px solid rgba(255,255,255,0.03)",
+                              backgroundColor: isRevoked ? "rgba(63,185,80,0.04)" : "rgba(248,81,73,0.04)",
+                            }}
+                          >
+                            <td style={{ padding: "8px 6px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <HardDrive size={14} color={COLORS.textMuted} />
+                                <a href={r.html_url} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.blue, textDecoration: "none" }}>
+                                  {r.full_name}
+                                </a>
+                              </div>
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.orange, fontSize: 11 }}>Repo Inactive</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: 600, color: COLORS.red }}>{idle}d</td>
+                            <td style={{ padding: "8px 6px", textAlign: "center", color: COLORS.textSecondary, fontSize: 11 }}>
+                              {new Date(r.pushed_at).toLocaleDateString()}
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 9999, fontSize: 10, fontWeight: 600,
+                                backgroundColor: isRevoked ? "rgba(63,185,80,0.15)" : "rgba(248,81,73,0.15)",
+                                color: isRevoked ? COLORS.green : COLORS.red,
+                                border: `1px solid ${isRevoked ? COLORS.green : COLORS.red}44`,
+                              }}>
+                                {isRevoked ? <><CheckCircle size={10} /> Revoked</> : <><XCircle size={10} /> Pending</>}
+                              </span>
+                            </td>
+                            <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                              {!isRevoked && !revocationRunning && (
+                                <button
+                                  onClick={() => {
+                                    setRevocationRunning(true);
+                                    const logs = [...revocationLog];
+                                    logs.push(`── Revoking: ${r.full_name} ──`);
+                                    logs.push(`  Source: Repo Inactive | Idle: ${idle}d`);
+                                    setRevocationLog([...logs]);
+                                    setTimeout(() => {
+                                      logs.push(`  [MOCK] DELETE /orgs/{org}/copilot/billing/selected_users — removing ${r._owner || r.full_name.split("/")[0]}`);
+                                      logs.push(`  [MOCK] ✓ Copilot license removed for ${r.name}`);
+                                      setRevocationLog([...logs]);
+                                      setTimeout(() => {
+                                        logs.push(`  [MOCK] Entra ID: Looking up ${r._owner || r.full_name.split("/")[0]}@contoso.com`);
+                                        logs.push(`  [MOCK] PATCH /users/${r._owner || r.full_name.split("/")[0]} — removing license for ${r.name}`);
+                                        logs.push(`  [MOCK] ✓ Entra ID license reassigned`);
+                                        logs.push("");
+                                        setRevokedUsers((prev) => new Set([...prev, key]));
                                         setRevocationLog([...logs]);
                                         setRevocationRunning(false);
                                       }, 500);
